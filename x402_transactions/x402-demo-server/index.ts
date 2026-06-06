@@ -59,6 +59,7 @@ app.get('/weather', c => {
   });
 });
 
-serve({ fetch: app.fetch, port: 4021 }, () => {
-  console.log(`x402 Resource Server listening at http://localhost:4021`);
+const port = 5555;
+serve({ fetch: app.fetch, port }, () => {
+  console.log(`x402 Resource Server listening at http://localhost:${port}`);
 });
