@@ -1,0 +1,22 @@
+{
+  "name": "x402-payer",
+  "version": "1.0.0",
+  "description": "One-shot x402 payer invoked by the marketplace backend to pay a selected printer offer.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pay": "node --import tsx pay.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@algorandfoundation/algokit-utils": "10.0.0-alpha.42",
+    "@x402/avm": "^2.14.0",
+    "@x402/core": "^2.14.0",
+    "@x402/fetch": "^2.14.0",
+    "dotenv": "^17.4.2"
+  }
+}

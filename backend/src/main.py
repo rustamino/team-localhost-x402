@@ -2,13 +2,14 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import AppConfig
 from .exchange import ExchangeRateService
+from .payer import PayerError, pay_offer
 from .printers import JobRequest, collect_offers
 from .selection import Selection, select_offer
 
@@ -81,6 +82,44 @@ async def offers(req: OffersRequest) -> dict:
         "confidence":     decision.confidence,
         "reasoning":      decision.reasoning,
     }
+
+
+class PayRequest(BaseModel):
+    # payment_url of the offer the user picked on the offers screen
+    # (PrinterOffer.payment_url, the printer's x402-protected GET /pay/{job_id}).
+    payment_url: str
+    job_id: str | None = None
+
+
+@app.post("/api/pay")
+async def pay(req: PayRequest) -> dict:
+    """Pay the selected printer offer over x402 (no Pera Wallet).
+
+    Shells out to the TypeScript payer (``x402-payer/pay.ts``), which signs a
+    USDC payment on Algorand testnet with the agent mnemonic and completes the
+    402 → pay → retry handshake against the printer's ``payment_url``.
+    """
+    try:
+        result = await pay_offer(req.payment_url)
+    except PayerError as exc:
+        log.warning("payer failed for %s: %s", req.payment_url, exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not result.ok:
+        raise HTTPException(
+            status_code=402,
+            detail=result.error or "payment was not settled",
+        )
+
+    return {
+        "ok":       True,
+        "job_id":   req.job_id,
+        "payer":    result.payer,
+        "tx_id":    result.tx_id,
+        "settle":   result.settle,
+        "resource": result.resource,
+    }
+
 
 # StaticFiles html=True resolves "/" → "index.html" but NOT "/admin" → "admin.html"
 # (it would need "admin/index.html" for that). Explicit routes avoid the ambiguity.
