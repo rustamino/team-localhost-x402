@@ -12,11 +12,13 @@ Falls back to QR mode on any network error.
 import json
 import threading
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, GdkPixbuf
+
+from ks_includes.screen_panel import ScreenPanel
 
 try:
     import qrcode
@@ -33,15 +35,20 @@ POLL_INTERVAL_MS = 5000
 def _generate_qr_pixbuf(url: str, size: int = 300) -> GdkPixbuf.Pixbuf | None:
     if not _HAS_QR:
         return None
-    qr = qrcode.QRCode(border=2)
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    img = img.resize((size, size), Image.NEAREST)
-    data = img.tobytes()
-    return GdkPixbuf.Pixbuf.new_from_data(
-        data, GdkPixbuf.Colorspace.RGB, False, 8, size, size, size * 3
-    )
+    try:
+        qr = qrcode.QRCode(border=2)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+        img = img.resize((size, size), Image.NEAREST)
+        data = img.tobytes()
+        return GdkPixbuf.Pixbuf.new_from_bytes(
+            GLib.Bytes.new(data),
+            GdkPixbuf.Colorspace.RGB, True, 8,
+            size, size, size * 4,
+        )
+    except Exception:
+        return None
 
 
 def _fmt_eta(iso: str | None) -> str:
@@ -49,21 +56,18 @@ def _fmt_eta(iso: str | None) -> str:
         return "?"
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        local = dt.astimezone()
-        return local.strftime("%H:%M")
+        return dt.astimezone().strftime("%H:%M")
     except Exception:
         return iso[:16]
 
 
-class Panel(Gtk.Box):
-    """KlipperScreen panel — registers itself as screen 'x402_queue'."""
-
-    name = "x402_queue"
-    title = "Print Queue"
+class Panel(ScreenPanel):
+    """KlipperScreen panel — x402 print queue / marketplace QR."""
 
     def __init__(self, screen, title):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self._screen = screen
+        title = title or _("Print Queue")
+        super().__init__(screen, title)
+
         self._timeout_id = None
 
         # --- Stack: qr_page / queue_page ---
@@ -72,19 +76,22 @@ class Panel(Gtk.Box):
         self._stack.set_transition_duration(200)
 
         # QR page
-        self._qr_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self._qr_page.set_halign(Gtk.Align.CENTER)
-        self._qr_page.set_valign(Gtk.Align.CENTER)
-
+        self._qr_page = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=8,
+            halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
+            hexpand=True, vexpand=True,
+        )
         self._qr_image = Gtk.Image()
         self._qr_label = Gtk.Label(label=MARKETPLACE_URL)
         self._qr_label.get_style_context().add_class("title_1")
-
         self._qr_page.pack_start(self._qr_image, False, False, 0)
         self._qr_page.pack_start(self._qr_label, False, False, 0)
 
         # Queue page
-        self._queue_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._queue_page = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=4,
+            hexpand=True, vexpand=True,
+        )
         self._queue_page.set_margin_top(12)
         self._queue_page.set_margin_start(16)
         self._queue_page.set_margin_end(16)
@@ -104,7 +111,6 @@ class Panel(Gtk.Box):
 
         self._stack.add_named(self._qr_page, "qr")
         self._stack.add_named(self._queue_page, "queue")
-        self.pack_start(self._stack, True, True, 0)
 
         # Pre-render QR
         pixbuf = _generate_qr_pixbuf(MARKETPLACE_URL)
@@ -114,17 +120,32 @@ class Panel(Gtk.Box):
             self._qr_image.set_from_icon_name("dialog-error", Gtk.IconSize.DIALOG)
 
         self._stack.set_visible_child_name("qr")
-        self.show_all()
 
-        # Start polling
+        # Add stack to ScreenPanel's content box
+        self.content.add(self._stack)
+        self.content.show_all()
+
+        # Start polling immediately
         self._timeout_id = GLib.timeout_add(POLL_INTERVAL_MS, self._poll)
         GLib.idle_add(self._poll)
 
     # ------------------------------------------------------------------
+    def activate(self):
+        """Called by KlipperScreen when navigating to this panel."""
+        if self._timeout_id is None:
+            self._timeout_id = GLib.timeout_add(POLL_INTERVAL_MS, self._poll)
+            GLib.idle_add(self._poll)
+
+    def deactivate(self):
+        """Called by KlipperScreen when navigating away from this panel."""
+        if self._timeout_id is not None:
+            GLib.source_remove(self._timeout_id)
+            self._timeout_id = None
+
+    # ------------------------------------------------------------------
     def _poll(self) -> bool:
-        """Fetch /status in a background thread; update UI on main thread."""
         threading.Thread(target=self._fetch_status, daemon=True).start()
-        return True  # keep timer alive
+        return True
 
     def _fetch_status(self):
         try:
@@ -144,10 +165,9 @@ class Panel(Gtk.Box):
             self._show_qr()
             return
 
-        # Update queue page
-        self._queue_title.set_text(f"Print queue ({len(queue)} job{'s' if len(queue) != 1 else ''})")
+        count = len(queue)
+        self._queue_title.set_text(f"Print queue ({count} job{'s' if count != 1 else ''})")
 
-        # Rebuild list rows
         for row in self._listbox.get_children():
             self._listbox.remove(row)
 
@@ -172,16 +192,3 @@ class Panel(Gtk.Box):
 
         self._listbox.show_all()
         self._stack.set_visible_child_name("queue")
-
-    # ------------------------------------------------------------------
-    def on_leave(self):
-        """Called by KlipperScreen when navigating away from this panel."""
-        if self._timeout_id is not None:
-            GLib.source_remove(self._timeout_id)
-            self._timeout_id = None
-
-    def on_enter(self):
-        """Called by KlipperScreen when navigating to this panel."""
-        if self._timeout_id is None:
-            self._timeout_id = GLib.timeout_add(POLL_INTERVAL_MS, self._poll)
-            GLib.idle_add(self._poll)

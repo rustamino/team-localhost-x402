@@ -105,11 +105,11 @@ export function validateJobId(jobId: string): void {
 function extractPayerAddress(header: string | undefined): string | null {
   if (!header) return null;
   try {
-    const payload = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as {
-      paymentGroup: string[];
-      paymentIndex: number;
+    const outer = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as {
+      payload: { paymentGroup: string[]; paymentIndex: number };
     };
-    const txBytes = Buffer.from(payload.paymentGroup[payload.paymentIndex], "base64");
+    const { paymentGroup, paymentIndex } = outer.payload;
+    const txBytes = Buffer.from(paymentGroup[paymentIndex], "base64");
     const { txn } = algosdk.decodeSignedTransaction(new Uint8Array(txBytes));
     return txn.sender.toString();
   } catch {

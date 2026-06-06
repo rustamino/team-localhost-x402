@@ -475,7 +475,7 @@ async function requestOffers(instruction) {
       job_id:      state.jobId,
       grams:       SLICE.grams,
       minutes:     SLICE.minutes,
-      gcode_url:   `${location.origin}/files/${state.jobId}.gcode`,
+      gcode_url:   `${location.origin}/files/benchy.gcode`,
       instruction: instruction || null,
     }),
   });
