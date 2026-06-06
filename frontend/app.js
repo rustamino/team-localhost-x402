@@ -299,15 +299,20 @@ function showAuthorizeScreen(offer) {
 
   document.getElementById("session-addr-display").textContent = avmAddress;
 
-  // render QR via toDataURL — works in hidden sections, errors are catchable
-  QRCode.toDataURL(arc26, { width: 200, margin: 2, color: { dark: "#000", light: "#fff" } })
-    .then(url => { document.getElementById("qr-img").src = url; })
-    .catch(err => { console.error("QR render failed:", err); });
+  // render QR — toCanvas uses native browser Canvas API, no Node.js deps
+  QRCode.toCanvas(
+    document.getElementById("qr-canvas"),
+    arc26,
+    { width: 200, margin: 2, color: { dark: "#000000", light: "#ffffff" } },
+  ).catch(err => { console.error("QR render failed:", err); });
 
-  // Pera deeplink
-  document.getElementById("btn-open-pera").onclick = () => {
-    window.open(`perawallet://transfer?${new URLSearchParams({ asset: String(assetId), to: avmAddress, amount: String(microUsdc) })}`, "_blank");
-  };
+  // Pera deeplink — <a href> works more reliably than window.open on Android
+  const peraHref = `perawallet://transfer?${new URLSearchParams({
+    asset:  String(assetId),
+    to:     avmAddress,
+    amount: String(microUsdc),
+  })}`;
+  document.getElementById("btn-open-pera").href = peraHref;
 
   // copy address
   document.getElementById("btn-copy-addr").onclick = () => {
@@ -316,53 +321,56 @@ function showAuthorizeScreen(offer) {
     setTimeout(() => document.getElementById("btn-copy-addr").textContent = "copy", 1500);
   };
 
-  // TTL countdown (15 min)
-  state.orderTtlEnd = new Date(Date.now() + 15 * 60 * 1000);
-  const tick = setInterval(() => {
-    const ms = state.orderTtlEnd - Date.now();
-    if (ms <= 0) { clearInterval(tick); return; }
-    const m = Math.floor(ms / 60000);
-    const s = Math.floor((ms % 60000) / 1000);
-    document.getElementById("auth-countdown").textContent =
-      `⏳ ${m}:${String(s).padStart(2, "0")} remaining`;
-  }, 1000);
+  const statusEl = document.getElementById("auth-status");
+  const payBtn   = document.getElementById("btn-confirm-pay");
 
-  // TODO: poll backend for deposit confirmation
-  // poll GET /api/jobs/{id} for status === "paid" (deposit detected by backend)
-  pollForDeposit(() => { clearInterval(tick); startPayingScreen(); });
-}
+  payBtn.disabled = false;
+  payBtn.textContent = "Pay now";
+  statusEl.textContent = "";
 
-function pollForDeposit(onDetected) {
-  // TODO: replace with real polling or WebSocket subscription
-  setTimeout(onDetected, 5000); // demo: auto-advance after 5 s
+  payBtn.onclick = async () => {
+    payBtn.disabled = true;
+    payBtn.textContent = "Paying…";
+    statusEl.textContent = "";
+
+    try {
+      const res = await fetch("/api/pay", {
+        method:  "POST",
+        headers: { "content-type": "application/json" },
+        body:    JSON.stringify({ payment_url: offer.paymentUrl, job_id: state.jobId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        statusEl.style.color = "var(--error, #e55)";
+        statusEl.textContent = data.detail || "Payment failed";
+        payBtn.disabled = false;
+        payBtn.textContent = "Retry";
+        return;
+      }
+      state.txId = data.tx_id || null;
+      startPayingScreen(data);
+    } catch (err) {
+      statusEl.style.color = "var(--error, #e55)";
+      statusEl.textContent = "Network error — try again";
+      payBtn.disabled = false;
+      payBtn.textContent = "Retry";
+    }
+  };
 }
 
 // ─── screen 6: paying ────────────────────────────────────────────────────────
 
-async function startPayingScreen() {
+async function startPayingScreen(payResult = {}) {
   showScreen("s-paying");
 
-  await sleep(1200);
-  // step: submit tx
-  const fakeTxId = "TX" + Math.random().toString(36).slice(2, 14).toUpperCase();
-  state.txId = fakeTxId;
-  setPayStep("pay-step-submit", "done",    `Submitted → ${fakeTxId.slice(0, 12)}…`);
-  setPayStep("pay-step-confirm", "active", null);
+  const txId = payResult.tx_id || state.txId || null;
 
-  // TODO: call algosdk to submit actual USDC asset transfer from session wallet
-  // const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({...})
+  setPayStep("pay-step-submit", "done", txId ? `Submitted → ${txId.slice(0, 12)}…` : "Submitted");
+  setPayStep("pay-step-confirm", "done", null);
+  setPayStep("pay-step-verify",  "done", null);
+  setPayStep("pay-step-done",    "done", null);
 
-  await sleep(3500);
-  setPayStep("pay-step-confirm", "done",  null);
-  setPayStep("pay-step-verify",  "active", null);
-
-  await sleep(1500);
-  // TODO: call printer's /pay/{job_id} with X-PAYMENT header and verify via facilitator
-
-  setPayStep("pay-step-verify", "done",  null);
-  setPayStep("pay-step-done",   "done",  null);
-
-  await sleep(800);
+  await sleep(600);
   showTrackingScreen();
 }
 

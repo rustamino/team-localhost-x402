@@ -126,7 +126,7 @@
     </div>
 
     <div class="qr-wrap">
-      <img id="qr-img" alt="Payment QR" style="width:200px;height:200px;border-radius:8px">
+      <canvas id="qr-canvas"></canvas>
       <div class="label">Scan with Pera Wallet</div>
     </div>
 
@@ -137,10 +137,11 @@
 
     <div style="display:flex;justify-content:space-between;align-items:center">
       <div class="countdown" id="auth-countdown"></div>
-      <div id="auth-status" style="font-size:.8rem;color:var(--text2)">Waiting for deposit…</div>
+      <div id="auth-status" style="font-size:.8rem;color:var(--text2)"></div>
     </div>
 
-    <button class="btn btn-primary" id="btn-open-pera">Open Pera Wallet</button>
+    <a class="btn btn-secondary" id="btn-open-pera" href="#" target="_blank" rel="noopener">Open Pera Wallet</a>
+    <button class="btn btn-primary" id="btn-confirm-pay">Pay now</button>
   </section>
 
   <!-- ══════════════════════════════════════
@@ -250,7 +251,7 @@
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script src="/qrcode.min.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

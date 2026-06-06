@@ -26,6 +26,17 @@ exchange = ExchangeRateService(ttl=config.rate_cache_ttl)
 
 app = FastAPI(title="3D Print Marketplace")
 
+_NO_CACHE = "no-store, no-cache, must-revalidate"
+_STATIC_EXTS = {".html", ".js", ".css"}
+
+@app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    response = await call_next(request)
+    if Path(request.url.path).suffix in _STATIC_EXTS:
+        response.headers["Cache-Control"] = _NO_CACHE
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 # --- API routers go here (registered before static mount) ---
 # app.include_router(jobs.router,     prefix="/api")
 # app.include_router(search.router,   prefix="/api")
