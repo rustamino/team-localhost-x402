@@ -3,8 +3,9 @@
 ## Overview
 
 Printer Marketplace is a multi-sided platform that connects users with 3D-printer operators.
-The user uploads an STL file and provides a natural-language selection instruction.
-An agent-client, acting on behalf of the user, automatically selects the best offer from registered printers and pays for the job — non-custodially, directly from the user's wallet.
+The user uploads an STL file, provides a natural-language selection instruction, and authorizes
+a spending budget. An agent-client, running in the user's browser, autonomously collects offers,
+selects the best one, and pays — without requiring the user to confirm the individual payment.
 
 ---
 
@@ -12,8 +13,9 @@ An agent-client, acting on behalf of the user, automatically selects the best of
 
 ```
 User's phone / browser
-  ├── SPA (web UI)              — model upload, instruction, offer display
-  └── Agent-client (JS/WASM)    — holds user keys locally, selects offer, signs tx
+  ├── SPA (web UI)              — model upload, instruction, budget input
+  ├── Agent-client (JS)         — selects offer via LLM, drives x402 payment flow
+  └── Session Wallet (JS)       — ephemeral keypair in sessionStorage, funded by user
 
 Marketplace (cloud backend, Python)
   ├── REST + WebSocket API
@@ -36,9 +38,24 @@ Algorand TestNet
 
 ## Flow
 
+### 0. Budget Authorization (one-time per session)
+
+The user opens the SPA. Before any job is submitted, the SPA generates an ephemeral keypair
+(session wallet) and stores it in `sessionStorage`. The user sees the session wallet address
+and enters a spending budget (e.g., 5 USDC).
+
+The SPA displays an ARC-26 URI to fund the session wallet:
+`algorand://SESSION_ADDR?amount=5000000&asset=10458941`
+
+The user opens Pera Wallet, scans the QR, and confirms **one transfer** of the budget amount.
+This is the only moment the user's main wallet is involved.
+
+From this point, the agent-client holds the session wallet keys and can pay autonomously,
+up to the authorized balance, without further prompts to the user.
+
 ### 1. Upload and Slicing
 
-The user opens the Marketplace SPA, uploads an STL file, and enters a natural-language instruction
+The user uploads an STL file and enters a natural-language selection instruction
 (e.g., "cheapest offer that can start within 2 hours and is in Berlin").
 
 The Marketplace backend runs the STL through CuraEngine and obtains:
@@ -123,34 +140,40 @@ The LLM evaluates whether it can make a confident selection given the instructio
 If confident, it returns the index of the winning offer. Otherwise it returns `null` with a reason,
 and the SPA prompts the user to refine the instruction.
 
-### 5. Payment via Pera Wallet (non-custodial)
+### 5. Autonomous Payment (x402 client flow)
 
-The agent-client runs in the user's browser. The Marketplace never holds or sees the user's keys.
+The agent-client has the session wallet keys and acts fully autonomously. No user confirmation
+is required at this step — the budget was already authorized in step 0.
 
-After the LLM selects offer `i`:
+The agent-client checks that the winning offer's price (from the 402 header) is within the
+session wallet balance. If not, it informs the user that the budget is insufficient.
 
-1. Marketplace returns the winning offer to the SPA, including the ARC-26 payment URI:
-   `algorand://ADDR?amount=670000&asset=10458941&note=j_abc123`
+Otherwise it executes the standard x402 client flow:
 
-2. SPA displays the QR code and a "Open Pera Wallet" deeplink button.
+1. Agent-client submits a USDC asset transfer from the session wallet to the printer's address:
+   `amount = 670000 micro-USDC, note = "j_abc123"`
 
-3. The user opens Pera Wallet on their phone, scans the QR or taps the deeplink.
-   Pera Wallet shows: recipient address, amount (0.670000 USDC), note (job_id).
+2. Algorand confirms the transaction (~3.3 s). Agent-client receives the `tx_id`.
 
-4. User confirms. Pera Wallet signs and submits the transaction to Algorand TestNet.
+3. Agent-client retries `GET /pay/j_abc123` with proof:
+   `X-PAYMENT: {"tx_id": "TXABC...", "scheme": "algorand", ...}`
 
-5. The winning printer's x402 server watches for incoming USDC transfers.
-   When the transaction is confirmed (~3.3 s), it extracts the job_id from the note field,
-   marks the order as paid, and responds with `200 OK` to subsequent requests on `/pay/{job_id}`.
+4. Printer calls the Algorand facilitator, which verifies the on-chain settlement and returns
+   a signed confirmation. Printer responds `200 OK`.
 
-6. The Marketplace polls `/pay/{job_id}` on the winning printer. Once the 402 is resolved,
-   it sends a start command to that printer.
+5. Marketplace receives confirmation, sends a start command to the printer.
 
-7. The printer already has the G-Code cached from the quote phase. It loads it into Moonraker
-   and starts printing. Progress is streamed back to the SPA via WebSocket.
+6. The printer loads the cached G-Code into Moonraker and starts printing.
+   Progress is streamed back to the SPA via WebSocket.
 
-This flow is non-custodial: the private key never leaves the user's device.
-The Marketplace acts only as an aggregator and orchestrator, not as a payment proxy.
+### 6. Session Cleanup
+
+After the job completes (or if the user cancels before payment), the agent-client sweeps
+any remaining session wallet balance back to the user's main Algorand address.
+The ephemeral keypair is then discarded from `sessionStorage`.
+
+This flow is non-custodial: the Marketplace never holds or sees any private key.
+The session wallet is controlled entirely by the browser-side agent-client.
 
 ---
 
@@ -218,7 +241,10 @@ Prices are displayed in EUR for readability; payment is in USDC.
 ## Data Flow Summary
 
 ```
-User
+User (Pera Wallet)
+ │  funds session wallet with budget (one Pera Wallet confirmation)
+ ▼
+Browser Agent-Client (session wallet funded)
  │  upload STL + instruction
  ▼
 Marketplace
@@ -227,23 +253,28 @@ Marketplace
  │  printers download G-Code, compute actual time, cache locally
  │  collect quotes + fetch 402 metadata (price = f(actual_minutes))
  │  LLM(instruction, quotes) → winning_index
- │  return winning quote + ARC-26 URI to SPA
+ │  return winning offer + 402 payment details to agent-client
  ▼
-SPA / Pera Wallet (on user's phone)
- │  user confirms payment in Pera Wallet
- │  Algorand tx submitted
+Agent-Client (autonomous, no user prompt)
+ │  verifies price ≤ session wallet balance
+ │  submits USDC tx from session wallet → printer address
+ │  receives tx_id from Algorand (~3.3 s)
+ │  retries GET /pay/{job_id} with X-PAYMENT proof
  ▼
-Winning Printer x402 watcher
- │  detects tx, marks order paid
+Winning Printer x402 Resource Server
+ │  calls Algorand facilitator → proof verified
+ │  returns 200 OK, notifies Marketplace
  ▼
 Marketplace
- │  polls /pay/{job_id} until 200
- │  sends STL to winning printer
- │  sends start command
+ │  sends start command to printer
  ▼
 Printer
- │  runs G-code via Klipper/Moonraker
+ │  loads cached G-Code into Moonraker, starts print
  │  streams progress
+ ▼
+Agent-Client
+ │  displays live progress
+ │  on completion: sweeps remaining session balance → user's main wallet
  ▼
 SPA (live progress bar)
 ```
