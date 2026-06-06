@@ -197,6 +197,8 @@ async def select_offer(
         )
 
     output_text = _extract_output_text(response.json())
+    print("OpenAI response output text:", output_text)
+
     parsed = json.loads(output_text)
 
     selected_index = parsed.get("selected_index")

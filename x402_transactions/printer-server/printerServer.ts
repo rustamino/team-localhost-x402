@@ -21,7 +21,7 @@ if (!avmAddress || !facilitatorUrl) {
 
 const port = Number(process.env.PORT ?? 5555);
 
-// Важно для marketplace: если сервер доступен с другого устройства,
+// Если сервер доступен с другого устройства,
 // PUBLIC_BASE_URL должен быть не localhost, а например:
 // http://192.168.43.12:5555
 const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`;
@@ -77,23 +77,6 @@ x402Server.register(ALGORAND_TESTNET_CAIP2, avmServerScheme);
 
 const app = new Hono();
 
-/**
- * ВАЖНО:
- *
- * paymentRequirements — общий mutable объект.
- * При POST /quote мы добавляем сюда новый ключ:
- *
- *   "GET /pay/j_abc123"
- *
- * После этого paymentMiddleware начинает защищать этот endpoint.
- *
- * Для хакатона это самый простой способ сделать dynamic /pay/{job_id},
- * не меняя x402 API и не переписывая middleware.
- */
-const paymentRequirements: Record<string, any> = {};
-
-app.use(paymentMiddleware(paymentRequirements, x402Server));
-
 // -----------------------------
 // Helpers
 // -----------------------------
@@ -108,62 +91,105 @@ function requireNumber(value: unknown, fieldName: string): number {
   return num;
 }
 
+function validateJobId(jobId: string) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(jobId)) {
+    throw new Error("job_id may contain only letters, numbers, _ and -");
+  }
+}
+
 function computePrinterMinutes(marketplaceMinutes: number): number {
   // Имитация того, что конкретный принтер печатает иначе,
   // чем generic CuraEngine estimate.
-  //
-  // Например:
-  // 1.15 = этот принтер на 15% медленнее generic estimate.
   const printerSpeedMultiplier = Number(process.env.PRINTER_TIME_MULTIPLIER ?? 1.15);
 
   return Math.ceil(marketplaceMinutes * printerSpeedMultiplier);
 }
 
 function computePriceUsdc(grams: number, printerMinutes: number): number {
-  // Очень простая pricing model для демо.
-  //
-  // Можно вынести в env:
-  // PRICE_PER_GRAM_USDC=0.03
-  // PRICE_PER_MINUTE_USDC=0.005
-  // FLAT_FEE_USDC=0.10
-
   const pricePerGram = Number(process.env.PRICE_PER_GRAM_USDC ?? 0.03);
   const pricePerMinute = Number(process.env.PRICE_PER_MINUTE_USDC ?? 0.005);
   const flatFee = Number(process.env.FLAT_FEE_USDC ?? 0.1);
 
   const price = grams * pricePerGram + printerMinutes * pricePerMinute + flatFee;
 
-  // Округлим до 6 знаков, потому что USDC = 6 decimals.
+  // Округляем до 6 знаков, потому что USDC = 6 decimals.
   return Math.ceil(price * 1_000_000) / 1_000_000;
 }
 
 function computeCanStartAt(): string {
-  // Для демо: принтер может начать через 20 минут.
   const delayMinutes = Number(process.env.CAN_START_DELAY_MINUTES ?? 20);
   return new Date(Date.now() + delayMinutes * 60_000).toISOString();
 }
 
-function registerPaymentRequirement(job: PrintJob) {
-  const routeKey = `GET /pay/${job.job_id}`;
+const registeredPaymentRoutes = new Set<string>();
 
-  paymentRequirements[routeKey] = {
-    accepts: [
-      {
-        scheme: "exact",
-        price: `$${job.price_usdc.toFixed(6)}`,
-        network: ALGORAND_TESTNET_CAIP2,
-        payTo: avmAddress,
-        extra: {
-          asset: USDC_TESTNET_ASA_ID,
+function registerPaymentRoute(job: PrintJob) {
+  validateJobId(job.job_id);
+
+  const path = `/pay/${job.job_id}`;
+  const routeKey = `GET ${path}`;
+
+  if (registeredPaymentRoutes.has(routeKey)) {
+    return;
+  }
+
+  const paymentConfig = {
+    [routeKey]: {
+      accepts: [
+        {
+          scheme: "exact",
+          price: `$${job.price_usdc.toFixed(6)}`,
+          network: ALGORAND_TESTNET_CAIP2,
+          payTo: avmAddress,
+          extra: {
+            asset: USDC_TESTNET_ASA_ID,
+          },
         },
-      },
-    ],
-    description: `3D print job ${job.job_id} on ${printerInfo.name}`,
+      ],
+      description: `3D print job ${job.job_id} on ${printerInfo.name}`,
+    },
   };
 
-  console.log("Registered x402 payment route:");
+  console.log("Registering protected x402 route:");
   console.log(routeKey);
-  console.log(paymentRequirements[routeKey]);
+  console.log(paymentConfig[routeKey]);
+
+  /**
+   * Ровно та же схема, что в рабочем /weather example:
+   *
+   * Первый GET /pay/job_id без оплаты:
+   *   paymentMiddleware возвращает 402 Payment Required
+   *
+   * Повторный GET /pay/job_id с payment proof:
+   *   paymentMiddleware пропускает запрос дальше
+   *   handler ниже возвращает 200 OK
+   */
+  app.use(path, paymentMiddleware(paymentConfig, x402Server));
+
+  app.get(path, c => {
+    const storedJob = jobs.get(job.job_id);
+
+    if (!storedJob) {
+      return c.json({ error: "Unknown job_id" }, 404);
+    }
+
+    storedJob.status = "paid";
+    jobs.set(job.job_id, storedJob);
+
+    console.log(`Payment confirmed for job ${job.job_id}`);
+    console.log("Pretending to start print controller...");
+
+    return c.json({
+      status: "paid",
+      job_id: storedJob.job_id,
+      printer_id: printerInfo.printer_id,
+      price_usdc: storedJob.price_usdc,
+      gcode_url: storedJob.gcode_url,
+      message: "Payment confirmed. Print job can be started.",
+    });
+  });
+
+  registeredPaymentRoutes.add(routeKey);
 }
 
 // -----------------------------
@@ -183,6 +209,8 @@ app.post("/quote", async c => {
     if (!jobId) {
       return c.json({ error: "Missing job_id" }, 400);
     }
+
+    validateJobId(jobId);
 
     const grams = requireNumber(body.grams, "grams");
     const marketplaceMinutes = requireNumber(body.minutes, "minutes");
@@ -221,7 +249,7 @@ app.post("/quote", async c => {
 
     jobs.set(jobId, job);
 
-    registerPaymentRequirement(job);
+    //registerPaymentRoute(job);
 
     return c.json({
       can_start_at: canStartAt,
@@ -238,41 +266,6 @@ app.post("/quote", async c => {
       400,
     );
   }
-});
-
-/**
- * Этот endpoint защищён x402 middleware.
- *
- * Первый GET без оплаты:
- *   → 402 Payment Required
- *
- * Повторный GET с payment proof:
- *   → middleware пропускает сюда
- *   → мы считаем job paid
- *   → возвращаем 200 OK
- */
-app.get("/pay/:job_id", c => {
-  const jobId = c.req.param("job_id");
-  const job = jobs.get(jobId);
-
-  if (!job) {
-    return c.json({ error: "Unknown job_id" }, 404);
-  }
-
-  job.status = "paid";
-  jobs.set(jobId, job);
-
-  console.log(`Payment confirmed for job ${jobId}`);
-  console.log("Pretending to unlock print job / start print controller...");
-
-  return c.json({
-    status: "paid",
-    job_id: job.job_id,
-    printer_id: printerInfo.printer_id,
-    price_usdc: job.price_usdc,
-    gcode_url: job.gcode_url,
-    message: "Payment confirmed. Print job can be started.",
-  });
 });
 
 // Debug endpoint для хакатона.
