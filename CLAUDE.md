@@ -199,6 +199,13 @@ KlipperScreen on Pi mirrors Screen 1 (QR) while idle, Screen 4 (progress) while 
 
 ---
 
+## Implementation Notes
+
+- x402 `PAYMENT-SIGNATURE` header: `base64(JSON.stringify({ x402Version, payload: { paymentGroup, paymentIndex }, ... }))` — `paymentGroup`/`paymentIndex` are nested under `payload`, not at the top level
+- `@x402/hono` `compiledRoutes` is a snapshot created at startup; dynamic route registration requires direct push/splice into `httpServer.compiledRoutes` (see `reports/library_suggestions.md` for a proposed PR)
+- Frontend uses `QRCode.toCanvas` (not `toDataURL`) — the Node.js PNG encoder doesn't work in a browser bundle; qrcode is bundled locally via esbuild
+- `klipperscreen/panels/x402_order.py` was removed; the action bar in `base_panel.py` (~line 74) opens `x402_queue` instead
+
 ## Implementation Order
 
 1. `machine_id.py` + `POST /api/register` — already have script, need backend endpoint
