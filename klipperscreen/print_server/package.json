@@ -1,0 +1,17 @@
+{
+  "name": "x402-print-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --import tsx/esm server.ts",
+    "dev": "node --import tsx/esm --watch server.ts"
+  },
+  "dependencies": {
+    "@x402/avm": "^2.14.0",
+    "@x402/core": "^2.14.0",
+    "@x402/hono": "^2.14.0",
+    "algosdk": "^3.0.0",
+    "hono": "^4.0.0",
+    "tsx": "^4.0.0"
+  }
+}
