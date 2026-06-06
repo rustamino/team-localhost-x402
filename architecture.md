@@ -122,12 +122,14 @@ X-PAYMENT-REQUIRED: {
   "address": "ADDR",
   "amount": 670000,
   "asset": 10458941,
-  "nonce": "j_abc123"
+  "nonce": "<random per-request value>"
 }
 ```
 
-The amount field is the authoritative price for this job (micro-USDC, 6 decimals).
-This step extracts machine-readable payment requirements without initiating any payment.
+`amount` is the authoritative price for this job (micro-USDC, 6 decimals).
+`nonce` is a server-generated random value included by the x402 SDK in the transaction
+to prevent replay attacks; it carries no business meaning (the order is identified by the URL path).
+This step extracts payment requirements without initiating any payment.
 The Marketplace merges `/info` metadata, `/quote` availability, and 402 price into one record per printer.
 
 ### 4. Agentic Offer Selection
@@ -151,7 +153,7 @@ session wallet balance. If not, it informs the user that the budget is insuffici
 Otherwise it executes the standard x402 client flow:
 
 1. Agent-client submits a USDC asset transfer from the session wallet to the printer's address:
-   `amount = 670000 micro-USDC, note = "j_abc123"`
+   `amount = 670000 micro-USDC, note = <nonce from X-PAYMENT-REQUIRED>`
 
 2. Algorand confirms the transaction (~3.3 s). Agent-client receives the `tx_id`.
 
@@ -213,14 +215,16 @@ when the client retries the request with an `X-PAYMENT` proof header.
 - Network: TestNet
 - USDC ASA ID: `10458941` (6 decimals; 1 USDC = 1 000 000 micro-USDC)
 - Finality: ~3.3 s (one Algorand round)
-- ARC-26 URI: `algorand://ADDR?amount=N&asset=10458941&note=job_id`
+- ARC-26 URI (budget funding): `algorand://SESSION_ADDR?amount=N&asset=10458941`
 - Facilitator: Algorand's official x402 facilitator (provided by Algorand Foundation)
 - Payment verification flow:
-  1. User submits tx via Pera Wallet; Algorand returns `tx_id`
+  1. Agent-client submits tx with `note = nonce` from `X-PAYMENT-REQUIRED`; receives `tx_id`
   2. Agent-client retries `GET /pay/{job_id}` with header `X-PAYMENT: {"tx_id": "...", ...}`
   3. Printer calls Algorand facilitator to verify the proof
-  4. Facilitator confirms on-chain settlement → printer returns `200 OK`
-- Overpayment: auto-refunded by the printer's x402 server (separate USDC tx, note `refund_{job_id}`)
+  4. Facilitator checks: correct address, amount, asset, nonce matches tx note → `200 OK`
+- Order routing is via URL path (`/pay/{job_id}`), not the transaction note
+- Nonce in transaction note is an anti-replay mechanism, handled transparently by the x402 SDK
+- Overpayment: auto-refunded by the printer's x402 server (separate USDC tx)
 
 ---
 
