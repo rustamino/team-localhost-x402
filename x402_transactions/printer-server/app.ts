@@ -92,6 +92,12 @@ export function requireNumber(value: unknown, fieldName: string): number {
   return num;
 }
 
+export function validateJobId(jobId: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(jobId)) {
+    throw new Error("job_id may contain only letters, numbers, _ and -");
+  }
+}
+
 export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: boolean } = {}) {
   const jobs = new Map<string, PrintJob>();
   const paymentRequirements: Record<string, unknown> = {};
@@ -161,6 +167,7 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
 
       const jobId = String(body.job_id ?? "").trim();
       if (!jobId) return c.json({ error: "Missing job_id" }, 400);
+      try { validateJobId(jobId); } catch (e) { return c.json({ error: (e as Error).message }, 400); }
 
       const grams = requireNumber(body.grams, "grams");
       const marketplaceMinutes = requireNumber(body.minutes, "minutes");

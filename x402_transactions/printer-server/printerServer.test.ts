@@ -3,6 +3,7 @@ import {
   computePrinterMinutes,
   computePriceUsdc,
   requireNumber,
+  validateJobId,
   createApp,
   type AppConfig,
 } from "./app.js";
@@ -80,6 +81,24 @@ describe("requireNumber", () => {
 
   it("rejects Infinity", () => {
     expect(() => requireNumber(Infinity, "grams")).toThrow("Invalid numeric field: grams");
+  });
+});
+
+describe("validateJobId", () => {
+  it("accepts alphanumeric, underscore, hyphen", () => {
+    expect(() => validateJobId("j_abc123")).not.toThrow();
+    expect(() => validateJobId("job-42")).not.toThrow();
+    expect(() => validateJobId("ABC")).not.toThrow();
+  });
+
+  it("rejects slashes and path traversal", () => {
+    expect(() => validateJobId("../secret")).toThrow();
+    expect(() => validateJobId("job/id")).toThrow();
+  });
+
+  it("rejects spaces and special chars", () => {
+    expect(() => validateJobId("job id")).toThrow();
+    expect(() => validateJobId("job?id")).toThrow();
   });
 });
 
