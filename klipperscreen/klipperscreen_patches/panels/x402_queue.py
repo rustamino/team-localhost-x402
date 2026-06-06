@@ -76,7 +76,8 @@ class Panel(ScreenPanel):
 
         # QR size: leave room for 2 task rows (~36px each) + separator + URL label
         task_area_h = 90
-        qr_size = max(120, min(avail_w, avail_h - task_area_h) - 16)
+        qr_raw = min(avail_w, avail_h - task_area_h) - 16
+        qr_size = max(120, int(qr_raw * 0.9))
 
         # ── QR image ──────────────────────────────────────────────────
         pixbuf = _generate_qr_pixbuf(MARKETPLACE_URL, qr_size)
@@ -170,7 +171,6 @@ class Panel(ScreenPanel):
         has_jobs = bool(recent)
 
         self._sep.set_visible(has_jobs)
-        self._task_box.set_visible(has_jobs)
 
         for i, lbl in enumerate(self._task_rows):
             if i < len(recent):
@@ -180,6 +180,11 @@ class Panel(ScreenPanel):
                 status = job.get("status", "")
                 icon = "▶ " if status == "printing" else "   "
                 lbl.set_text(f"{icon}{payer} — done {eta_str}")
-                lbl.set_visible(True)
+                lbl.show()
             else:
-                lbl.set_visible(False)
+                lbl.hide()
+
+        if has_jobs:
+            self._task_box.show_all()
+        else:
+            self._task_box.hide()
