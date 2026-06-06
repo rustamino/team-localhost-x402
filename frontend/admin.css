@@ -1,0 +1,129 @@
+.admin-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px;
+  width: 100%;
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.admin-header-left  { display: flex; align-items: center; gap: 12px; }
+.admin-header-right { display: flex; align-items: center; gap: 12px; }
+.admin-refresh-btn  { width: auto; padding: 8px 16px; font-size: .85rem; }
+
+/* ── stats row ──────────────────────────── */
+
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: center;
+}
+.stat-value      { font-size: 2rem; font-weight: 700; }
+.stat-value.ok   { color: var(--ok); }
+.stat-value.warn { color: var(--warn); }
+
+/* ── section title ──────────────────────── */
+
+.section-title {
+  font-size: .75rem;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 14px;
+}
+
+/* ── printer grid ───────────────────────── */
+
+.printer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.loading-msg { color: var(--text2); font-size: .9rem; }
+
+/* ── printer card ───────────────────────── */
+
+.printer-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.printer-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.printer-card-name  { font-weight: 600; font-size: .95rem; }
+.printer-card-id    { font-size: .72rem; color: var(--text2); margin-top: 2px; }
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+.status-dot.online   { background: var(--ok);   box-shadow: 0 0 6px var(--ok); }
+.status-dot.offline  { background: var(--text2); }
+.status-dot.printing { background: var(--warn);  box-shadow: 0 0 6px var(--warn); }
+
+.printer-info-rows { border-top: 1px solid var(--border); padding-top: 10px; }
+
+.printer-rate-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: .8rem;
+  padding: 3px 0;
+}
+.printer-rate-row .key   { color: var(--text2); }
+.printer-rate-row .value { font-weight: 500; }
+
+.printer-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.cap-tag {
+  font-size: .7rem;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text2);
+}
+
+.printer-last-seen {
+  font-size: .75rem;
+  color: var(--text2);
+  text-align: right;
+}
+
+/* ── responsive ─────────────────────────── */
+
+@media (max-width: 600px) {
+  .admin-stats { grid-template-columns: repeat(3, 1fr); }
+  .stat-value  { font-size: 1.4rem; }
+}

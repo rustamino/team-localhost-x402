@@ -5,6 +5,24 @@
 Single-page application served at `x402.nb3.me`. Mobile-first (primary user journey involves
 Pera Wallet on the same phone). No user accounts — session state lives in `sessionStorage`.
 
+## File Layout
+
+```
+frontend/
+  index.html   — main SPA (screens 1–8)
+  admin.html   — admin dashboard (served at /admin)
+  style.css    — shared styles (dark theme, mobile-first)
+  admin.css    — admin-specific layout
+  app.js       — SPA state machine, API calls, mock data
+  admin.js     — printer grid, polling /api/printers
+```
+
+The backend mounts this directory as a static file root:
+```python
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+```
+API routes (`/api/*`, `/ws/*`) are registered before the mount and take precedence.
+
 ---
 
 ## Screens
@@ -186,14 +204,15 @@ tracking
 
 | Screen | Call | Notes |
 |---|---|---|
-| 1 | `POST /api/search` | text → model list |
-| 1 | `POST /api/jobs` | file upload, starts slicing |
+| 1 | `POST /api/search` | text → model list (Printables + Cults3D) |
+| 1 | `POST /api/jobs` | file/model_url upload, starts slicing |
 | 3 | `GET /api/jobs/{id}` (poll / WS) | status: slicing → quoted |
-| 4 | — | offers in job response |
+| 4 | — | offers embedded in job response |
 | 5 | `POST /api/jobs/{id}/checkout` | creates x402 order, returns session wallet address + amount |
 | 5 | `GET /api/jobs/{id}` (poll / WS) | status: checkout → paid (deposit detected) |
-| 6 | client-side | x402 SDK: sign tx, submit, retry with X-PAYMENT |
+| 6 | client-side | algosdk: sign USDC transfer, submit, retry GET /pay/{job_id} with X-PAYMENT |
 | 7 | `WS /ws/client/{job_id}` | progress, temps |
+| admin | `GET /api/printers` | list of registered printers with cached /info + status |
 
 ---
 
@@ -210,11 +229,48 @@ Keys are cleared on session cleanup (job done or user navigates away after compl
 
 ---
 
+---
+
+## Admin Dashboard (`/admin`)
+
+Served from `admin.html`. No authentication for hackathon scope.
+
+Polls `GET /api/printers` on load and every 15 seconds. "Refresh" button triggers manual reload.
+
+**Stats row:** total registered, online now, currently printing.
+
+**Printer cards** (grid, 300 px min-width columns). Each card shows:
+- Printer name + ID
+- Status indicator dot: green (idle), amber (printing), grey (offline)
+- Location city + coordinates
+- Rate per gram (EUR) and rate per minute (EUR) — from printer's `/info`
+- Materials / capabilities tags
+- Last-seen timestamp (seconds or minutes ago)
+
+**`GET /api/printers` response shape** (backend aggregates from registered printers' `/info`):
+```json
+[
+  {
+    "printer_id":         "printer_42",
+    "name":               "BerlinMaker FDM-1",
+    "status":             "online",
+    "location":           { "lat": 52.52, "lon": 13.40, "city": "Berlin" },
+    "rate_per_gram_eur":  "0.035",
+    "rate_per_minute_eur":"0.005",
+    "capabilities":       { "materials": ["PLA", "PETG"], "max_volume_cm3": 400 },
+    "last_seen_ago_s":    12
+  }
+]
+```
+
+---
+
 ## Non-Functional Requirements
 
 - Mobile-first responsive layout (375 px minimum width)
 - All monetary amounts: EUR with 2 dp, USDC with 6 dp
-- AlgoExplorer links open in new tab
-- QR codes generated client-side (no third-party service)
+- AlgoExplorer links open in new tab: `https://testnet.algoexplorer.io/tx/{tx_id}`
+- QR codes generated client-side via `qrcode` npm package (CDN, no third-party service)
 - No authentication, no persistent backend sessions
 - Works without HTTPS on localhost for development; requires HTTPS in production (Pera Wallet deeplinks)
+- `algosdk` loaded from CDN for session wallet keypair generation and transaction signing

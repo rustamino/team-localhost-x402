@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Print Marketplace · x402</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="app-header">
+    <span class="logo">🖨</span>
+    <span class="brand">3D Print Marketplace</span>
+    <span class="network-tag">TestNet</span>
+  </header>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 1 — INPUT
+  ══════════════════════════════════════ -->
+  <section class="screen active" id="s-input">
+    <div class="field">
+      <label>What to print?</label>
+      <input type="text" id="search-text" placeholder="find a benchy on printables…" autocomplete="off">
+    </div>
+
+    <div class="divider">or</div>
+
+    <div class="drop-zone" id="drop-zone">
+      <span class="drop-icon">📁</span>
+      Drop .STL here or tap to browse
+      <input type="file" id="file-input" accept=".stl" style="display:none">
+    </div>
+
+    <div class="field">
+      <label>How to choose a printer?</label>
+      <textarea id="instruction" rows="2"
+        placeholder="cheapest offer starting today, preferably in Berlin"></textarea>
+    </div>
+
+    <div class="spacer"></div>
+    <button class="btn btn-primary" id="btn-find" disabled>Find printers →</button>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 2 — MODEL SEARCH RESULTS
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-search">
+    <button class="back-btn" data-back="s-input">← Back</button>
+    <h2 id="search-heading">Results</h2>
+    <div id="model-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 3 — PROCESSING
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-processing">
+    <div class="spacer"></div>
+    <div class="steps" id="processing-steps">
+      <div class="step active" id="step-slicing">
+        <span class="step-icon">⟳</span>
+        <div class="step-text">
+          Slicing model…
+          <div class="sub" id="step-slicing-sub"></div>
+        </div>
+      </div>
+      <div class="progress-wrap" style="padding-left:36px">
+        <div class="progress-bar"><div class="progress-fill" id="slicing-bar" style="width:0%"></div></div>
+      </div>
+      <div class="step pending" id="step-quotes">
+        <span class="step-icon">○</span>
+        <div class="step-text">
+          Collecting printer quotes
+          <div class="sub" id="step-quotes-sub"></div>
+        </div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 4 — OFFERS
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-offers">
+    <button class="back-btn" data-back="s-input">← Start over</button>
+    <div>
+      <h2>Printer offers</h2>
+      <div class="label" id="offers-meta" style="margin-top:4px"></div>
+    </div>
+    <div id="offer-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+    <div class="reasoning" id="agent-reasoning" style="display:none"></div>
+    <div class="alert alert-warn" id="agent-clarify" style="display:none">
+      <strong>Agent couldn't decide:</strong> <span id="agent-reason"></span>
+    </div>
+    <div class="spacer"></div>
+    <div class="btn-row" id="clarify-row" style="display:none">
+      <button class="btn btn-secondary" id="btn-clarify">Clarify instruction</button>
+      <button class="btn btn-outline"   id="btn-manual">Choose manually</button>
+    </div>
+    <button class="btn btn-primary" id="btn-pay-offer" disabled>Pay selected offer</button>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 5 — BUDGET AUTHORIZATION
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-authorize">
+    <button class="back-btn" data-back="s-offers">← Back</button>
+    <h2>Fund session wallet</h2>
+    <p style="font-size:.85rem;color:var(--text2);line-height:1.5">
+      Fund the agent's temporary wallet. It will pay the printer automatically
+      and return any remainder to your address.
+    </p>
+
+    <div class="card">
+      <div class="label">Selected printer</div>
+      <div class="card-title" id="auth-printer-name" style="margin-top:4px"></div>
+      <div class="card-price">
+        <span class="eur" id="auth-price-eur"></span>
+        <span class="usdc" id="auth-price-usdc"></span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Your Algorand address (for refund)</label>
+      <input type="text" id="refund-address" placeholder="ABCDEF…" autocomplete="off">
+    </div>
+
+    <div class="qr-wrap">
+      <canvas id="qr-canvas"></canvas>
+      <div class="label">Scan with Pera Wallet</div>
+    </div>
+
+    <div class="addr-row">
+      <span id="session-addr-display" class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis"></span>
+      <button class="copy-btn" id="btn-copy-addr">copy</button>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="countdown" id="auth-countdown"></div>
+      <div id="auth-status" style="font-size:.8rem;color:var(--text2)">Waiting for deposit…</div>
+    </div>
+
+    <button class="btn btn-primary" id="btn-open-pera">Open Pera Wallet</button>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 6 — PAYING (autonomous)
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-paying">
+    <div class="spacer"></div>
+    <div class="card">
+      <div class="steps" id="pay-steps">
+        <div class="step done">
+          <span class="step-icon">✓</span>
+          <div class="step-text">Budget received</div>
+        </div>
+        <div class="step active" id="pay-step-submit">
+          <span class="step-icon">⟳</span>
+          <div class="step-text">
+            Submitting USDC transfer…
+            <div class="sub" id="pay-tx-id"></div>
+          </div>
+        </div>
+        <div class="step pending" id="pay-step-confirm">
+          <span class="step-icon">○</span>
+          <div class="step-text">Waiting for block confirmation (~3 s)</div>
+        </div>
+        <div class="step pending" id="pay-step-verify">
+          <span class="step-icon">○</span>
+          <div class="step-text">Verifying with Algorand facilitator</div>
+        </div>
+        <div class="step pending" id="pay-step-done">
+          <span class="step-icon">○</span>
+          <div class="step-text">Payment accepted · starting print</div>
+        </div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 7 — PRINT PROGRESS
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-tracking">
+    <div class="alert alert-ok" id="tracking-header">
+      ✓ Paid · Printing
+    </div>
+
+    <div class="card">
+      <div class="label">Printer</div>
+      <div class="card-title" id="tracking-printer" style="margin-top:4px"></div>
+      <div class="card-sub"   id="tracking-file"></div>
+
+      <div class="big-progress" style="margin-top:12px">
+        <div class="big-pct" id="tracking-pct">0%</div>
+        <div class="big-progress-bar">
+          <div class="big-progress-fill" id="tracking-bar" style="width:0%"></div>
+        </div>
+        <div class="big-progress-label">
+          <span id="tracking-elapsed"></span>
+          <span id="tracking-eta"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="temps-card">
+      <div class="label" style="margin-bottom:8px">Temperatures</div>
+      <div class="temp-row">
+        <span>Hotend</span>
+        <span id="temp-hotend" class="temp-heating">— / —</span>
+      </div>
+      <div class="temp-row">
+        <span>Bed</span>
+        <span id="temp-bed" class="temp-heating">— / —</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label" style="margin-bottom:8px">📍 Pick-up location</div>
+      <div id="tracking-location" style="font-size:.9rem;line-height:1.6"></div>
+      <a id="tracking-maps-link" href="#" target="_blank"
+         style="font-size:.8rem;color:var(--accent);margin-top:6px;display:inline-block">
+        Open in Maps ↗
+      </a>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0">
+      <span class="label">Transaction</span>
+      <a id="tracking-tx" class="tx-link" href="#" target="_blank">—</a>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════
+       SCREEN 8 — DONE
+  ══════════════════════════════════════ -->
+  <section class="screen" id="s-done">
+    <div class="spacer"></div>
+    <div class="done-icon">🎉</div>
+    <div class="card" style="text-align:center">
+      <h2>Print complete!</h2>
+      <div class="card-sub" id="done-filename" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:8px">📍 Pick up at</div>
+      <div id="done-location" style="font-size:.95rem;line-height:1.6;font-weight:500"></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn btn-secondary" id="btn-new-order">New order</button>
+  </section>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

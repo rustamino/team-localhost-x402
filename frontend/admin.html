@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin · 3D Print Marketplace</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+<div class="admin-shell">
+
+  <header class="admin-header">
+    <div class="admin-header-left">
+      <span class="logo">🖨</span>
+      <div>
+        <div class="brand">Marketplace Admin</div>
+        <div class="label">x402 · Algorand TestNet</div>
+      </div>
+    </div>
+    <div class="admin-header-right">
+      <span id="last-updated" class="label"></span>
+      <button class="btn btn-secondary admin-refresh-btn" id="btn-refresh">↻ Refresh</button>
+    </div>
+  </header>
+
+  <div class="admin-stats" id="admin-stats">
+    <div class="stat-card">
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="label">Registered printers</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value ok" id="stat-online">—</div>
+      <div class="label">Online now</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-printing">—</div>
+      <div class="label">Printing</div>
+    </div>
+  </div>
+
+  <div class="section-title">Connected Printers</div>
+
+  <div class="printer-grid" id="printer-grid">
+    <div class="loading-msg">Loading…</div>
+  </div>
+
+</div>
+
+<script src="/admin.js"></script>
+</body>
+</html>
