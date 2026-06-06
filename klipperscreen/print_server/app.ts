@@ -196,7 +196,7 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
       })
       .map(j => ({
         job_id: j.job_id,
-        payer_short: j.payer_short,
+        price_usdc: j.price_usdc,
         status: j.status,
         started_at: j.started_at,
         eta: j.eta,

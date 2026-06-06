@@ -192,7 +192,7 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
       .map(j => ({
         job_id: j.job_id,
-        payer_short: j.payer_short,
+        price_usdc: j.price_usdc,
         status: j.status,
         error_message: j.error_message,
         refund_txid: j.refund_txid,

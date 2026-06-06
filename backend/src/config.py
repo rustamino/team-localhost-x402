@@ -51,6 +51,8 @@ class AppConfig:
     public_base_url: str             # externally reachable URL of this backend
     openai_api_key: str | None
     openai_model: str
+    marketplace_wallet: str          # Algorand address that receives user payments
+    marketplace_fee_pct: Decimal     # commission kept by marketplace (0 = passthrough)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -65,4 +67,6 @@ class AppConfig:
             public_base_url=_env("PUBLIC_BASE_URL", "https://x402.nb3.me"),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             openai_model=_env("OPENAI_MODEL", "gpt-4.1-mini"),
+            marketplace_wallet=_env("MARKETPLACE_WALLET", ""),
+            marketplace_fee_pct=Decimal(_env("MARKETPLACE_FEE_PCT", "0")),
         )

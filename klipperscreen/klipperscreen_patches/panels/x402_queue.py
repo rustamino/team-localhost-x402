@@ -175,11 +175,13 @@ class Panel(ScreenPanel):
         for i, lbl in enumerate(self._task_rows):
             if i < len(recent):
                 job = recent[i]
-                payer = job.get("payer_short") or "??????"
+                job_id = job.get("job_id") or "?"
+                price = job.get("price_usdc")
+                price_str = f"${price:.2f}" if price is not None else ""
                 eta_str = _fmt_eta(job.get("eta"))
                 status = job.get("status", "")
                 icon = "▶ " if status == "printing" else "   "
-                lbl.set_text(f"{icon}{payer} — done {eta_str}")
+                lbl.set_text(f"{icon}#{job_id} {price_str} — done {eta_str}")
                 lbl.show()
             else:
                 lbl.hide()

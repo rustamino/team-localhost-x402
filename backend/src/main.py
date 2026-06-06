@@ -1,5 +1,9 @@
+import asyncio
+import base64
 import logging
 import os
+import urllib.parse
+from decimal import Decimal, ROUND_UP
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -8,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .checkout import CheckoutIntent, store as checkout_store, watch as checkout_watch
 from .config import AppConfig
 from .exchange import ExchangeRateService
 from .payer import PayerError, pay_offer
@@ -25,6 +30,14 @@ config = AppConfig.from_env()
 exchange = ExchangeRateService(ttl=config.rate_cache_ttl)
 
 app = FastAPI(title="3D Print Marketplace")
+
+
+@app.on_event("startup")
+async def _start_checkout_watcher() -> None:
+    if config.marketplace_wallet:
+        asyncio.create_task(checkout_watch(config.marketplace_wallet, pay_offer))
+    else:
+        log.warning("MARKETPLACE_WALLET not set — checkout watcher disabled")
 
 _NO_CACHE = "no-store, no-cache, must-revalidate"
 _STATIC_EXTS = {".html", ".js", ".css"}
@@ -180,6 +193,76 @@ async def offers(req: OffersRequest) -> dict:
         "reasoning":       decision.reasoning,
         "printer_errors":  result.errors,   # [{url, error}] for each unreachable printer
     }
+
+
+class CheckoutRequest(BaseModel):
+    payment_url: str   # printer x402 proxy URL (from offer)
+    job_id: str
+    price_usdc: str    # string to preserve precision
+
+
+@app.post("/api/checkout")
+async def create_checkout(req: CheckoutRequest) -> dict:
+    """Create a payment intent and return ARC-26 URI pointing to the marketplace wallet.
+
+    The user pays from Pera Wallet to the marketplace wallet.  The backend
+    watcher detects the on-chain transfer and forwards the job to the printer.
+    """
+    if not config.marketplace_wallet:
+        raise HTTPException(status_code=503, detail="MARKETPLACE_WALLET not configured")
+
+    try:
+        price = Decimal(req.price_usdc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid price_usdc")
+
+    fee = config.marketplace_fee_pct / 100
+    user_price = price * (1 + fee)
+    micro_usdc = int((user_price * 1_000_000).to_integral_value(rounding=ROUND_UP))
+
+    note_b64 = base64.b64encode(req.job_id.encode()).decode()
+    asset_id  = 10_458_941
+
+    arc26_uri = (
+        f"algorand://{config.marketplace_wallet}"
+        f"?amount={micro_usdc}"
+        f"&asset={asset_id}"
+        f"&note={urllib.parse.quote(note_b64, safe='')}"
+    )
+    pera_href = (
+        "perawallet://transfer?"
+        + urllib.parse.urlencode({
+            "asset":  str(asset_id),
+            "to":     config.marketplace_wallet,
+            "amount": str(micro_usdc),
+            "note":   note_b64,
+        })
+    )
+
+    intent = CheckoutIntent(
+        checkout_id=req.job_id,
+        job_id=req.job_id,
+        amount_micro_usdc=micro_usdc,
+        payment_url=req.payment_url,
+    )
+    checkout_store.add(intent)
+
+    return {
+        "checkout_id":       intent.checkout_id,
+        "marketplace_wallet": config.marketplace_wallet,
+        "amount_usdc":       str(user_price),
+        "micro_usdc":        micro_usdc,
+        "arc26_uri":         arc26_uri,
+        "pera_href":         pera_href,
+    }
+
+
+@app.get("/api/checkout/{checkout_id}")
+async def get_checkout(checkout_id: str) -> dict:
+    intent = checkout_store.get(checkout_id)
+    if intent is None:
+        raise HTTPException(status_code=404, detail="Checkout not found")
+    return intent.to_dict()
 
 
 class PayRequest(BaseModel):

@@ -285,77 +285,100 @@ document.getElementById("btn-manual").addEventListener("click", () => {
 
 // ─── screen 5: authorize ─────────────────────────────────────────────────────
 
-function showAuthorizeScreen(offer) {
+async function showAuthorizeScreen(offer) {
   showScreen("s-authorize");
 
   document.getElementById("auth-printer-name").textContent = offer.printerName;
   document.getElementById("auth-price-eur").textContent    = "€" + offer.priceEur;
   document.getElementById("auth-price-usdc").textContent   = offer.priceUsdc + " USDC";
 
-  const avmAddress = offer.avmAddress;
-  const microUsdc  = offer.microUsdc;
-  const assetId    = offer.assetId;
-  const arc26      = `algorand://${avmAddress}?amount=${microUsdc}&asset=${assetId}`;
+  const statusEl = document.getElementById("auth-status");
+  const payBtn   = document.getElementById("btn-confirm-pay");
+  payBtn.disabled    = true;
+  payBtn.textContent = "Creating checkout…";
+  statusEl.textContent = "";
 
-  document.getElementById("session-addr-display").textContent = avmAddress;
+  // 1. Create checkout intent on the backend — get marketplace QR data.
+  let checkout;
+  try {
+    const res = await fetch("/api/checkout", {
+      method:  "POST",
+      headers: { "content-type": "application/json" },
+      body:    JSON.stringify({
+        payment_url: offer.paymentUrl,
+        job_id:      state.jobId,
+        price_usdc:  offer.priceUsdc,
+      }),
+    });
+    checkout = await res.json();
+    if (!res.ok) throw new Error(checkout.detail || "Checkout creation failed");
+  } catch (err) {
+    statusEl.style.color = "var(--error, #e55)";
+    statusEl.textContent = err.message || "Network error";
+    payBtn.textContent = "Retry";
+    payBtn.disabled    = false;
+    payBtn.onclick = () => showAuthorizeScreen(offer);
+    return;
+  }
 
-  // render QR — toCanvas uses native browser Canvas API, no Node.js deps
+  // 2. Show marketplace wallet QR (not the printer's address).
+  const { arc26_uri, pera_href, marketplace_wallet, checkout_id } = checkout;
+
+  document.getElementById("session-addr-display").textContent = marketplace_wallet;
+
   QRCode.toCanvas(
     document.getElementById("qr-canvas"),
-    arc26,
+    arc26_uri,
     { width: 200, margin: 2, color: { dark: "#000000", light: "#ffffff" } },
-  ).catch(err => { console.error("QR render failed:", err); });
+  ).catch(err => console.error("QR render failed:", err));
 
-  // Pera deeplink — <a href> works more reliably than window.open on Android
-  const peraHref = `perawallet://transfer?${new URLSearchParams({
-    asset:  String(assetId),
-    to:     avmAddress,
-    amount: String(microUsdc),
-  })}`;
-  document.getElementById("btn-open-pera").href = peraHref;
+  document.getElementById("btn-open-pera").href = pera_href;
 
-  // copy address
   document.getElementById("btn-copy-addr").onclick = () => {
-    navigator.clipboard.writeText(avmAddress);
+    navigator.clipboard.writeText(marketplace_wallet);
     document.getElementById("btn-copy-addr").textContent = "✓";
     setTimeout(() => document.getElementById("btn-copy-addr").textContent = "copy", 1500);
   };
 
+  payBtn.textContent = "Waiting for Pera payment…";
+  statusEl.style.color = "var(--text2, #888)";
+  statusEl.textContent  = "Pay via the QR or Pera deeplink above — we'll detect it automatically.";
+
+  // 3. Poll backend until user payment is detected and printer is paid.
+  await pollCheckout(checkout_id);
+}
+
+async function pollCheckout(checkoutId) {
   const statusEl = document.getElementById("auth-status");
-  const payBtn   = document.getElementById("btn-confirm-pay");
-
-  payBtn.disabled = false;
-  payBtn.textContent = "Pay now";
-  statusEl.textContent = "";
-
-  payBtn.onclick = async () => {
-    payBtn.disabled = true;
-    payBtn.textContent = "Paying…";
-    statusEl.textContent = "";
-
+  // ~10 min timeout (120 × 5 s)
+  for (let i = 0; i < 120; i++) {
+    await sleep(5000);
+    let data;
     try {
-      const res = await fetch("/api/pay", {
-        method:  "POST",
-        headers: { "content-type": "application/json" },
-        body:    JSON.stringify({ payment_url: offer.paymentUrl, job_id: state.jobId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        statusEl.style.color = "var(--error, #e55)";
-        statusEl.textContent = data.detail || "Payment failed";
-        payBtn.disabled = false;
-        payBtn.textContent = "Retry";
-        return;
-      }
-      state.txId = data.tx_id || null;
-      startPayingScreen(data);
-    } catch (err) {
-      statusEl.style.color = "var(--error, #e55)";
-      statusEl.textContent = "Network error — try again";
-      payBtn.disabled = false;
-      payBtn.textContent = "Retry";
+      const res = await fetch(`/api/checkout/${checkoutId}`);
+      data = await res.json();
+    } catch {
+      continue;  // transient network error — keep polling
     }
-  };
+
+    if (data.status === "paid") {
+      statusEl.style.color = "var(--text2, #888)";
+      statusEl.textContent  = "Payment received — forwarding to printer…";
+      continue;
+    }
+    if (data.status === "forwarded") {
+      state.txId = data.printer_tx_id || data.user_tx_id || null;
+      startPayingScreen({ tx_id: state.txId });
+      return;
+    }
+    if (data.status === "error") {
+      statusEl.style.color = "var(--error, #e55)";
+      statusEl.textContent  = data.error || "Payment error";
+      return;
+    }
+  }
+  statusEl.style.color = "var(--error, #e55)";
+  statusEl.textContent  = "Timed out waiting for payment — please try again.";
 }
 
 // ─── screen 6: paying ────────────────────────────────────────────────────────
