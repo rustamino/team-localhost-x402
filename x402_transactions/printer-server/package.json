@@ -4,24 +4,21 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "tsx printerServer.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "^11.5.1",
-      "onFail": "download"
-    }
-  },
   "type": "module",
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "@vitest/coverage-v8": "^3.0.0",
     "dotenv-cli": "^11.0.0",
     "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.6"
   },
   "dependencies": {
     "@algorandfoundation/algokit-utils": "10.0.0-alpha.42",

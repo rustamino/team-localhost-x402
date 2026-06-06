@@ -44,7 +44,12 @@ async function main(): Promise<void> {
   if (!paymentUrl) fail('Missing payment_url argument');
   if (!avmMnemonic) fail('Missing AVM_MNEMONIC env var (set it in x402-payer/.env)');
 
-  const secretKey = await getSecretKeyFromMnemonic(avmMnemonic);
+  let secretKey: string;
+  try {
+    secretKey = await getSecretKeyFromMnemonic(avmMnemonic);
+  } catch (err) {
+    fail(`key derivation failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // The Algorand signer that authorizes the USDC payment.
   const avmSigner = toClientAvmSigner(secretKey);
@@ -53,7 +58,7 @@ async function main(): Promise<void> {
   client.register(ALGORAND_TESTNET_CAIP2, new ExactAvmScheme(avmSigner));
 
   console.error(`[payer] signer:  ${avmSigner.address}`);
-  console.error(`[payer] paying:  ${paymentUrl}`);
+  console.error(`[payer] target:  ${paymentUrl}`);
 
   // Wrap fetch so a 402 response triggers payment + retry automatically.
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
@@ -69,8 +74,8 @@ async function main(): Promise<void> {
   }
 
   // Settlement receipt from the X-PAYMENT-RESPONSE header (carries the tx id).
-  const settle = new x402HTTPClient(client).getPaymentSettleResponse(name =>
-    response.headers.get(name),
+  const settle = new x402HTTPClient(client).getPaymentSettleResponse(headerName =>
+    response.headers.get(headerName),
   );
 
   let resource: unknown = null;
