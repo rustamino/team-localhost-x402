@@ -1,12 +1,12 @@
 """
 x402 print queue panel for KlipperScreen.
 
-Two modes:
-  QR   — queue is empty; shows QR code linking to the marketplace
-  List — queue has jobs; shows Task N from <WALLET[-6:]>, ETA, status icon
+Single-screen layout:
+  - QR code (top portion, links to marketplace)
+  - URL label
+  - Up to 2 most recent jobs at the bottom (always-on, no flapping)
 
-Polls printer-server GET /status every 5 s via GLib.timeout_add.
-Falls back to QR mode on any network error.
+Polls GET /status every 5 s via GLib.timeout_add.
 """
 
 import json
@@ -32,7 +32,7 @@ MARKETPLACE_URL = "https://x402.nb3.me"
 POLL_INTERVAL_MS = 5000
 
 
-def _generate_qr_pixbuf(url: str, size: int = 300) -> GdkPixbuf.Pixbuf | None:
+def _generate_qr_pixbuf(url: str, size: int) -> GdkPixbuf.Pixbuf | None:
     if not _HAS_QR:
         return None
     try:
@@ -62,82 +62,88 @@ def _fmt_eta(iso: str | None) -> str:
 
 
 class Panel(ScreenPanel):
-    """KlipperScreen panel — x402 print queue / marketplace QR."""
+    """Single-screen x402 panel: QR code + last 2 jobs."""
 
     def __init__(self, screen, title):
-        title = title or _("Print Queue")
+        title = title or "x402 Queue"
         super().__init__(screen, title)
 
         self._timeout_id = None
 
-        # --- Stack: qr_page / queue_page ---
-        self._stack = Gtk.Stack()
-        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self._stack.set_transition_duration(200)
+        # Available size (approximate)
+        avail_w = self._screen.width - self._gtk.action_bar_width
+        avail_h = self._screen.height - 50  # minus titlebar
 
-        # QR page
-        self._qr_page = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=8,
-            halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
-            hexpand=True, vexpand=True,
-        )
+        # QR size: leave room for 2 task rows (~36px each) + separator + URL label
+        task_area_h = 90
+        qr_size = max(120, min(avail_w, avail_h - task_area_h) - 16)
+
+        # ── QR image ──────────────────────────────────────────────────
+        pixbuf = _generate_qr_pixbuf(MARKETPLACE_URL, qr_size)
         self._qr_image = Gtk.Image()
-        self._qr_label = Gtk.Label(label=MARKETPLACE_URL)
-        self._qr_label.get_style_context().add_class("title_1")
-        self._qr_page.pack_start(self._qr_image, False, False, 0)
-        self._qr_page.pack_start(self._qr_label, False, False, 0)
-
-        # Queue page
-        self._queue_page = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=4,
-            hexpand=True, vexpand=True,
-        )
-        self._queue_page.set_margin_top(12)
-        self._queue_page.set_margin_start(16)
-        self._queue_page.set_margin_end(16)
-
-        self._queue_title = Gtk.Label()
-        self._queue_title.set_halign(Gtk.Align.START)
-        self._queue_title.get_style_context().add_class("title_1")
-        self._queue_page.pack_start(self._queue_title, False, False, 0)
-
-        self._listbox = Gtk.ListBox()
-        self._listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        self._listbox.get_style_context().add_class("frame")
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.add(self._listbox)
-        self._queue_page.pack_start(scroll, True, True, 0)
-
-        self._stack.add_named(self._qr_page, "qr")
-        self._stack.add_named(self._queue_page, "queue")
-
-        # Pre-render QR
-        pixbuf = _generate_qr_pixbuf(MARKETPLACE_URL)
         if pixbuf:
             self._qr_image.set_from_pixbuf(pixbuf)
         else:
             self._qr_image.set_from_icon_name("dialog-error", Gtk.IconSize.DIALOG)
+        self._qr_image.set_halign(Gtk.Align.CENTER)
 
-        self._stack.set_visible_child_name("qr")
+        # ── URL label ─────────────────────────────────────────────────
+        url_label = Gtk.Label(label=MARKETPLACE_URL)
+        url_label.get_style_context().add_class("title_2")
+        url_label.set_halign(Gtk.Align.CENTER)
 
-        # Add stack to ScreenPanel's content box
-        self.content.add(self._stack)
+        # ── Separator (hidden while queue is empty) ───────────────────
+        self._sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        self._sep.set_margin_top(6)
+        self._sep.set_margin_bottom(2)
+
+        # ── Task rows (2 slots) ───────────────────────────────────────
+        self._task_rows: list[Gtk.Label] = []
+        self._task_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=2,
+            hexpand=True,
+        )
+        for _ in range(2):
+            lbl = Gtk.Label()
+            lbl.set_halign(Gtk.Align.START)
+            lbl.set_margin_start(12)
+            lbl.set_margin_end(12)
+            lbl.set_margin_top(4)
+            lbl.set_margin_bottom(4)
+            lbl.set_line_wrap(True)
+            lbl.get_style_context().add_class("title_2")
+            self._task_rows.append(lbl)
+            self._task_box.pack_start(lbl, False, False, 0)
+
+        # ── Assemble ──────────────────────────────────────────────────
+        outer = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=4,
+            hexpand=True, vexpand=True,
+            valign=Gtk.Align.CENTER,
+        )
+        outer.pack_start(self._qr_image, False, False, 0)
+        outer.pack_start(url_label, False, False, 0)
+        outer.pack_start(self._sep, False, False, 0)
+        outer.pack_start(self._task_box, False, False, 0)
+
+        self.content.add(outer)
         self.content.show_all()
 
-        # Start polling immediately
+        # Hide separator and task rows initially (queue empty)
+        self._sep.set_visible(False)
+        self._task_box.set_visible(False)
+
+        # Initial poll (spawns background thread, returns immediately)
+        self._poll()
         self._timeout_id = GLib.timeout_add(POLL_INTERVAL_MS, self._poll)
-        GLib.idle_add(self._poll)
 
     # ------------------------------------------------------------------
     def activate(self):
-        """Called by KlipperScreen when navigating to this panel."""
         if self._timeout_id is None:
+            self._poll()
             self._timeout_id = GLib.timeout_add(POLL_INTERVAL_MS, self._poll)
-            GLib.idle_add(self._poll)
 
     def deactivate(self):
-        """Called by KlipperScreen when navigating away from this panel."""
         if self._timeout_id is not None:
             GLib.source_remove(self._timeout_id)
             self._timeout_id = None
@@ -145,7 +151,7 @@ class Panel(ScreenPanel):
     # ------------------------------------------------------------------
     def _poll(self) -> bool:
         threading.Thread(target=self._fetch_status, daemon=True).start()
-        return True
+        return True  # keep GLib timer alive
 
     def _fetch_status(self):
         try:
@@ -153,42 +159,27 @@ class Panel(ScreenPanel):
                 data = json.loads(resp.read())
             GLib.idle_add(self._update_ui, data)
         except Exception:
-            GLib.idle_add(self._show_qr)
+            pass  # keep whatever is displayed; don't flap on transient errors
 
     # ------------------------------------------------------------------
-    def _show_qr(self):
-        self._stack.set_visible_child_name("qr")
-
     def _update_ui(self, data: dict):
         queue = data.get("queue", [])
-        if not queue:
-            self._show_qr()
-            return
 
-        count = len(queue)
-        self._queue_title.set_text(f"Print queue ({count} job{'s' if count != 1 else ''})")
+        # Show up to the 2 most recent jobs
+        recent = queue[-2:] if len(queue) >= 2 else queue
+        has_jobs = bool(recent)
 
-        for row in self._listbox.get_children():
-            self._listbox.remove(row)
+        self._sep.set_visible(has_jobs)
+        self._task_box.set_visible(has_jobs)
 
-        for i, job in enumerate(queue):
-            payer = job.get("payer_short") or "??????"
-            eta_str = _fmt_eta(job.get("eta"))
-            status = job.get("status", "")
-            icon = "▶ " if status == "printing" else "   "
-            label_text = f"{icon}Task {i + 1} from {payer} — done at {eta_str}"
-
-            label = Gtk.Label(label=label_text)
-            label.set_halign(Gtk.Align.START)
-            label.set_margin_top(6)
-            label.set_margin_bottom(6)
-            label.set_margin_start(8)
-            if status == "printing":
-                label.get_style_context().add_class("title_2")
-
-            row = Gtk.ListBoxRow()
-            row.add(label)
-            self._listbox.add(row)
-
-        self._listbox.show_all()
-        self._stack.set_visible_child_name("queue")
+        for i, lbl in enumerate(self._task_rows):
+            if i < len(recent):
+                job = recent[i]
+                payer = job.get("payer_short") or "??????"
+                eta_str = _fmt_eta(job.get("eta"))
+                status = job.get("status", "")
+                icon = "▶ " if status == "printing" else "   "
+                lbl.set_text(f"{icon}{payer} — done {eta_str}")
+                lbl.set_visible(True)
+            else:
+                lbl.set_visible(False)
