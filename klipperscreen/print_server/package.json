@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node --import tsx/esm server.ts",
+    "start": "node --env-file=.env --import tsx/esm server.ts",
     "dev": "node --import tsx/esm --watch server.ts"
   },
   "dependencies": {
+    "@hono/node-server": "^1.0.0",
     "@x402/avm": "^2.14.0",
     "@x402/core": "^2.14.0",
     "@x402/hono": "^2.14.0",
