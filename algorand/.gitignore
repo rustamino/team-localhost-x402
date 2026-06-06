@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.env
+# never commit mnemonics or private keys
+*.mnemonic
+secrets.ts
+src/accounts.json
