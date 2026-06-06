@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import { serve } from "@hono/node-server";
 import { createApp, configFromEnv } from "./app.js";
+import { connectMarketplace } from "./marketplaceClient.js";
 
 config({
   path: process.env.ENV_FILE ?? ".env",
@@ -19,6 +20,18 @@ const cfg = configFromEnv(port);
 
 const { app } = createApp(cfg);
 
+const marketplaceUrl = process.env.MARKETPLACE_URL;
+const marketplaceToken = process.env.MARKETPLACE_TOKEN;
+
+if (marketplaceUrl && marketplaceToken) {
+  connectMarketplace(cfg, marketplaceUrl, marketplaceToken, app);
+} else {
+  console.warn(
+    "[marketplace] MARKETPLACE_URL or MARKETPLACE_TOKEN not set — running in standalone mode. " +
+    "Set both env vars to register with the marketplace backend.",
+  );
+}
+
 serve(
   {
     fetch: app.fetch,
@@ -26,8 +39,7 @@ serve(
     hostname: "0.0.0.0",
   },
   () => {
-    console.log(`Printer x402 Resource Server listening at ${cfg.publicBaseUrl}`);
-    console.log(`Local URL: http://localhost:${port}`);
+    console.log(`Printer x402 Resource Server listening on port ${port}`);
     console.log(`Printer ID: ${cfg.printerInfo.printer_id}`);
     console.log(`Receiving USDC to AVM_ADDRESS: ${avmAddress}`);
   },

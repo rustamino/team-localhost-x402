@@ -21,23 +21,9 @@ def _required(name: str) -> str:
     return v
 
 
-def _normalize_printer_url(raw: str) -> str:
-    url = raw.strip().rstrip("/")
-    if not url:
-        return ""
-    if "://" not in url:
-        url = f"http://{url}"
-    return url
-
-
-def _parse_printers(raw: str) -> tuple[str, ...]:
-    """Parse the PRINTERS env var: a comma-separated list of printer base URLs.
-
-    Accepts bare ``host:port`` (assumes http) or full ``http://host:port`` URLs.
-    Example: ``PRINTERS=http://localhost:5555,192.168.1.42:5556``
-    """
-    parts = (_normalize_printer_url(p) for p in raw.split(","))
-    return tuple(p for p in parts if p)
+def _parse_tokens(raw: str) -> frozenset[str]:
+    """Parse PRINTER_TOKENS: comma-separated SHA-256 hex strings."""
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
 
 
 @dataclass(frozen=True)
@@ -59,10 +45,11 @@ class AppConfig:
     price: PriceConfig
     x402_url: str
     slicer_url: str
-    rate_cache_ttl: float            # seconds
-    printers: tuple[str, ...]        # base URLs of registered printer servers
-    printer_timeout: float           # seconds, per printer HTTP request
-    openai_api_key: str | None       # used later for agentic offer selection
+    rate_cache_ttl: float
+    printer_tokens: frozenset[str]   # allowed registration tokens
+    printer_timeout: float           # seconds, per printer WS request
+    public_base_url: str             # externally reachable URL of this backend
+    openai_api_key: str | None
     openai_model: str
 
     @classmethod
@@ -73,8 +60,9 @@ class AppConfig:
             x402_url=_env("X402_SERVER_URL", "http://localhost:3402"),
             slicer_url=_env("SLICER_URL", "http://localhost:8001"),
             rate_cache_ttl=float(_env("RATE_CACHE_TTL", "300")),
-            printers=_parse_printers(_env("PRINTERS", "")),
+            printer_tokens=_parse_tokens(_env("PRINTER_TOKENS", "")),
             printer_timeout=float(_env("PRINTER_TIMEOUT", "8")),
+            public_base_url=_env("PUBLIC_BASE_URL", "https://x402.nb3.me"),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             openai_model=_env("OPENAI_MODEL", "gpt-4.1-mini"),
         )

@@ -1,20 +1,20 @@
 """
-Offer aggregator — collects real quotes from registered printer servers.
+Offer aggregator — collects real quotes from connected printer servers.
 
-This replaces the hard-coded mock offers. For a sliced job the marketplace
-talks to every printer listed in the ``PRINTERS`` env var and merges three
-responses into a single offer per printer:
+Printers register via WebSocket (/ws/printer) and are kept in the
+printer_registry. For a sliced job the marketplace fans out three
+steps to every connected printer over the same WS channel:
 
   1. GET  /info            → static metadata (name, location, capabilities)
-  2. POST /quote           → availability (can_start_at) + payment_url
-  3. GET  {payment_url}     → 402 Payment Required; the x402 body carries the
-                              authoritative price (amount, asset, payTo)
+  2. POST /quote           → availability (can_start_at) + local payment path
+  3. GET  /pay/{job_id}   → 402; PAYMENT-REQUIRED header carries price metadata
 
-A printer that fails (unreachable, bad response, no 402) is skipped and logged
-so one dead printer never blocks the whole marketplace. Printers are queried
-concurrently.
+The public payment_url in each offer points to the backend proxy route
+(/printer/{printer_id}/pay/{job_id}), which tunnels over WebSocket when
+the payer later sends an X-PAYMENT proof.
 
-See architecture.md §2–3 for the full flow.
+A printer that fails (disconnected, bad response, timeout) is skipped and
+logged — one dead printer never blocks the whole marketplace.
 """
 
 import asyncio
@@ -25,9 +25,8 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
-import httpx
-
 from .exchange import RateSnapshot
+from .printer_registry import PrinterConnection
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +122,7 @@ def _parse_payment_requirement(body: dict[str, Any]) -> PaymentRequirement:
     try:
         asset = int(raw_asset) if raw_asset is not None else None
     except (TypeError, ValueError):
-        asset = None  # non-numeric asset id (e.g. EVM address) — not used here
+        asset = None
 
     return PaymentRequirement(
         scheme=str(req.get("scheme", "")),
@@ -135,62 +134,64 @@ def _parse_payment_requirement(body: dict[str, Any]) -> PaymentRequirement:
     )
 
 
-async def _fetch_payment_requirement(
-    client: httpx.AsyncClient, payment_url: str
-) -> PaymentRequirement:
-    """GET the payment URL unauthenticated; expect a 402 with price metadata.
+def _parse_402_ws_response(resp: dict[str, Any]) -> PaymentRequirement:
+    """Extract payment requirement from a tunnelled 402 response dict.
 
-    x402 v2 encodes payment requirements in the ``PAYMENT-REQUIRED`` header as
-    base64(JSON).  The body is ``{}`` in v2.  v1 put the data in the body.
-    We try the header first and fall back to the body for v1 compatibility.
+    x402 v2: requirements in PAYMENT-REQUIRED header (base64 JSON).
+    x402 v1 fallback: requirements in body.
     """
-    resp = await client.get(payment_url)
-    if resp.status_code != 402:
-        raise ValueError(
-            f"expected 402 from {payment_url}, got {resp.status_code}"
-        )
-    header = resp.headers.get("payment-required")
+    hdrs = {k.lower(): v for k, v in (resp.get("headers") or {}).items()}
+    header = hdrs.get("payment-required")
     if header:
         try:
             body = json.loads(base64.b64decode(header))
         except Exception as exc:
             raise ValueError(f"malformed PAYMENT-REQUIRED header: {exc}") from exc
     else:
-        body = resp.json()
+        body = resp.get("body") or {}
     return _parse_payment_requirement(body)
 
 
 async def _build_offer(
-    client: httpx.AsyncClient,
-    base_url: str,
+    conn: PrinterConnection,
     job: JobRequest,
+    proxy_base_url: str,
     rate: RateSnapshot | None,
+    timeout: float,
 ) -> tuple[PrinterOffer | None, dict[str, str] | None]:
-    """Run /info → /quote → 402 for one printer.
+    """Run /info → /quote → /pay/{id} over WebSocket for one printer.
 
-    Returns ``(offer, None)`` on success or ``(None, error_dict)`` on failure so
-    the caller can surface connection problems to the user instead of silently
-    dropping them.
+    Returns (offer, None) on success or (None, error_dict) on failure.
     """
     try:
-        info_resp = await client.get(f"{base_url}/info")
-        info_resp.raise_for_status()
-        info = info_resp.json()
+        info_resp = await conn.request("GET", "/info", timeout=timeout)
+        if info_resp["status"] != 200:
+            raise ValueError(f"/info returned {info_resp['status']}")
+        info = info_resp["body"]
 
-        quote_resp = await client.post(f"{base_url}/quote", json=job.quote_body())
-        quote_resp.raise_for_status()
-        quote = quote_resp.json()
+        quote_resp = await conn.request("POST", "/quote", body=job.quote_body(), timeout=timeout)
+        if quote_resp["status"] != 200:
+            raise ValueError(f"/quote returned {quote_resp['status']}: {quote_resp.get('body')}")
+        quote = quote_resp["body"]
 
-        payment_url = quote.get("payment_url")
-        if not payment_url:
-            raise ValueError("quote response missing payment_url")
+        # Fetch the 402 over WS to extract payment metadata for the offer card.
+        # The proxy payment URL will be used by the payer for the actual payment.
+        pay_resp = await conn.request("GET", f"/pay/{job.job_id}", timeout=timeout)
+        if pay_resp["status"] != 402:
+            raise ValueError(
+                f"expected 402 from /pay/{job.job_id}, got {pay_resp['status']}"
+            )
+        payment = _parse_402_ws_response(pay_resp)
 
-        payment = await _fetch_payment_requirement(client, payment_url)
-    except (httpx.HTTPError, ValueError, KeyError) as exc:
-        log.warning("printer %s skipped: %s", base_url, exc)
-        return None, {"url": base_url, "error": str(exc)}
+    except (ValueError, KeyError, asyncio.TimeoutError) as exc:
+        log.warning("printer %s skipped: %s", conn.printer_id, exc)
+        return None, {"printer_id": conn.printer_id, "error": str(exc)}
 
-    price_usdc = (Decimal(payment.amount) / MICRO_USDC)
+    # Payment URL points to the backend proxy (/printer/{id}/pay/{job_id}),
+    # which tunnels the payer's X-PAYMENT request back to this printer over WS.
+    proxy_payment_url = f"{proxy_base_url}/printer/{conn.printer_id}/pay/{job.job_id}"
+
+    price_usdc = Decimal(payment.amount) / MICRO_USDC
     price_eur = (
         rate.usdc_to_eur(price_usdc).quantize(EUR_PLACES, rounding=ROUND_HALF_UP)
         if rate is not None
@@ -198,12 +199,12 @@ async def _build_offer(
     )
 
     return PrinterOffer(
-        printer_id=str(info.get("printer_id", "")),
+        printer_id=str(info.get("printer_id", conn.printer_id)),
         name=str(info.get("name", info.get("printer_id", "unknown"))),
         location=info.get("location") or {},
         capabilities=info.get("capabilities") or {},
         can_start_at=str(quote.get("can_start_at", "")),
-        payment_url=payment_url,
+        payment_url=proxy_payment_url,
         payment=payment,
         price_usdc=price_usdc,
         price_eur=price_eur,
@@ -214,24 +215,24 @@ async def _build_offer(
 class CollectResult:
     """Outcome of a batch collect_offers call."""
     offers: list[PrinterOffer]
-    errors: list[dict[str, str]]   # [{"url": "...", "error": "..."}, ...]
+    errors: list[dict[str, str]]
 
 
 async def collect_offers(
-    printer_urls: tuple[str, ...] | list[str],
+    connections: list[PrinterConnection],
     job: JobRequest,
+    proxy_base_url: str,
     rate: RateSnapshot | None = None,
     timeout: float = 8.0,
 ) -> CollectResult:
-    """Query all printers concurrently; return successful offers and any errors."""
-    if not printer_urls:
-        log.warning("no printers configured (set the PRINTERS env var)")
+    """Query all connected printers concurrently; return offers and errors."""
+    if not connections:
+        log.warning("no printers connected")
         return CollectResult(offers=[], errors=[])
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        pairs = await asyncio.gather(
-            *(_build_offer(client, url, job, rate) for url in printer_urls)
-        )
+    pairs = await asyncio.gather(
+        *(_build_offer(conn, job, proxy_base_url, rate, timeout) for conn in connections)
+    )
 
     offers = [offer for offer, _ in pairs if offer is not None]
     errors = [err for _, err in pairs if err is not None]
