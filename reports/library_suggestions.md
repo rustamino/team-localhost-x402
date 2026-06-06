@@ -117,59 +117,27 @@ function deregisterRoute(jobId: string) {
 
 ## Предложение PR: метод `registerRoute` / `unregisterRoute`
 
-### Принцип: полная обратная совместимость
+### Суть
 
-PR добавляет **только новые методы** к существующему классу. Ни конструктор,
-ни сигнатуры `paymentMiddleware` / `paymentMiddlewareFromHTTPServer`, ни
-поведение статических маршрутов не меняются. Весь существующий код продолжает
-работать без изменений.
-
----
-
-### Старый API — остаётся рабочим без изменений
-
-```ts
-// Полностью рабочий код ДО и ПОСЛЕ патча — ничего не ломается
-import { paymentMiddleware } from "@x402/hono";
-
-const app = new Hono();
-app.use(paymentMiddleware({
-  "GET /weather": {
-    accepts: [{ scheme: "exact", price: "$0.001", network: "...", payTo: "..." }],
-  },
-}, x402Server));
-```
-
-Если маршруты известны при старте — этот путь по-прежнему рекомендуется
-как самый простой.
-
----
-
-### Новый API — для динамических маршрутов (рекомендуется в документации)
-
-Добавить в `x402HTTPResourceServer` два метода:
+Добавить в `x402HTTPResourceServer` явный публичный API для динамической
+регистрации маршрутов:
 
 ```ts
 // @x402/core — src/http/x402HTTPResourceServer.ts
 
 class x402HTTPResourceServer {
-  // ... весь существующий код без изменений ...
+  // ... existing code ...
 
   /**
    * Register a payment-protected route at runtime.
-   *
-   * Use this when the route path is not known at server startup — for example,
-   * in marketplace or auction services where each resource gets its own
-   * payment URL dynamically.
-   *
-   * Safe to call at any point after middleware initialisation; takes effect
-   * immediately for subsequent requests.
+   * Safe to call after middleware initialisation.
    *
    * @param pattern - Route pattern, e.g. "GET /pay/:id" or "/resource/*"
    * @param config  - Payment requirement config (same shape as static routes)
    */
   registerRoute(pattern: string, config: RouteConfig): void {
     const parsed = this.parseRoutePattern(pattern);
+    // Prevent duplicate registration for the same pattern+verb
     const exists = this.compiledRoutes.some(
       r => r.pattern === parsed.path && r.verb === parsed.verb
     );
@@ -186,10 +154,6 @@ class x402HTTPResourceServer {
   /**
    * Remove a previously registered route.
    *
-   * Call this after a payment is confirmed to prevent replay attacks —
-   * subsequent requests to the same URL will no longer be intercepted by
-   * the payment middleware.
-   *
    * @param pattern - The same pattern string passed to registerRoute
    */
   unregisterRoute(pattern: string): void {
@@ -204,18 +168,24 @@ class x402HTTPResourceServer {
 }
 ```
 
-Пользователь получает `httpServer` через `paymentMiddlewareFromHTTPServer` —
-эта функция **уже экспортируется** из `@x402/hono`, так что новый паттерн
-не требует новых экспортов:
+### Зачем именно такой API, а не Proxy / реактивный объект
+
+| Вариант | Плюсы | Минусы |
+|---|---|---|
+| `registerRoute()` метод | Явный, типобезопасный, легко тестируется | Нужно хранить ссылку на `httpServer` |
+| `Proxy` на объект `routes` | Обратная совместимость — `paymentMiddleware(routes, ...)` продолжает работать без изменений в коде пользователя | Proxy не ловит `Object.assign`, spread, `delete`; сложнее отлаживать |
+| Ленивая компиляция в `getRouteConfig` | Не нужен отдельный API | Читает `routesConfig` при каждом запросе — O(n) на горячем пути; нет защиты от гонки |
+| `paymentMiddleware` принимает `() => routes` | Работает с существующей сигнатурой | Breaking change в сигнатуре |
+
+Метод `registerRoute` — наименее invasive: не меняет конструктор, не меняет
+`paymentMiddleware`, не трогает горячий путь `requiresPayment()`.
+
+### Пример использования после патча
 
 ```ts
-// Новый рекомендуемый паттерн для динамических маршрутов
 import { x402HTTPResourceServer, paymentMiddlewareFromHTTPServer } from "@x402/hono";
 
-const httpServer = new x402HTTPResourceServer(x402Server, {
-  // статические маршруты можно передавать здесь как раньше
-  "GET /fixed-resource": { accepts: [{ ... }] },
-});
+const httpServer = new x402HTTPResourceServer(x402Server, {});
 app.use(paymentMiddlewareFromHTTPServer(httpServer));
 
 // При создании нового платёжного ресурса:
@@ -234,36 +204,14 @@ httpServer.registerRoute(`GET /pay/${jobId}`, {
 httpServer.unregisterRoute(`GET /pay/${jobId}`);
 ```
 
----
-
-### Зачем именно такой API, а не Proxy / реактивный объект
-
-| Вариант | Обратная совместимость | Примечание |
-|---|---|---|
-| `registerRoute()` метод ✓ | Полная — старый код не меняется | Явный, типобезопасный |
-| `Proxy` на объект `routes` | Полная по интерфейсу, но меняется конструктор | Не ловит `Object.assign`, spread; сложнее отлаживать |
-| Ленивая компиляция в `getRouteConfig` | Полная | O(n) на горячем пути при каждом запросе |
-| `paymentMiddleware(() => routes)` | ❌ Breaking change сигнатуры | — |
-
-`registerRoute` — единственный вариант, который не меняет ни конструктор, ни
-существующие функции, ни горячий путь обработки запросов.
-
----
-
 ### Что нужно изменить в репо
 
 | Файл | Изменение |
 |---|---|
 | `packages/x402-core/src/http/x402HTTPResourceServer.ts` | Добавить `registerRoute()` и `unregisterRoute()` |
-| `packages/x402-core/src/http/index.ts` | Убедиться, что методы экспортируются в типах |
-| `packages/x402-hono/README.md` | Новый раздел "Dynamic routes" — рекомендуемый паттерн |
-| `packages/x402-core/test/http/x402HTTPResourceServer.test.ts` | Тесты register/unregister |
-
-В README раздел "Dynamic routes" должен быть помечен как основной для сервисов
-с runtime-маршрутами, а старый `paymentMiddleware(staticRoutes, server)` —
-остаться в разделе "Static routes" как допустимый упрощённый вариант.
-
----
+| `packages/x402-core/src/http/index.ts` | Убедиться, что методы в типах |
+| `packages/x402-hono/README.md` | Раздел "Dynamic routes" с примером |
+| `packages/x402-core/test/http/x402HTTPResourceServer.test.ts` | Тесты: register → запрос возвращает 402; unregister → 200 |
 
 ### Репро для issue / PR description
 
