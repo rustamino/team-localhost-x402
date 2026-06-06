@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@algorandfoundation/algokit-utils": "^9.2.0",
     "@hono/node-server": "^2.0.4",
     "@x402/avm": "^2.14.0",
     "@x402/core": "^2.14.0",

@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
+}

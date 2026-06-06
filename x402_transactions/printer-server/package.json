@@ -1,0 +1,36 @@
+{
+  "name": "printer-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.5.1",
+      "onFail": "download"
+    }
+  },
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "dotenv-cli": "^11.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@algorandfoundation/algokit-utils": "10.0.0-alpha.42",
+    "@hono/node-server": "^2.0.4",
+    "@x402/avm": "^2.14.0",
+    "@x402/core": "^2.14.0",
+    "@x402/fetch": "^2.14.0",
+    "@x402/hono": "^2.14.0",
+    "dotenv": "^17.4.2",
+    "hono": "^4.12.23"
+  }
+}
