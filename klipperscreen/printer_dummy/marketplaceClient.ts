@@ -37,6 +37,18 @@ async function routeThroughApp(
 export function connectMarketplace(cfg: AppConfig, marketplaceUrl: string, token: string, app: Hono): void {
   let delay = MIN_DELAY_MS;
 
+  let reconnectPending = false;
+  function scheduleReconnect(): void {
+    if (reconnectPending) return;
+    reconnectPending = true;
+    console.log(`[marketplace] reconnecting in ${delay}ms…`);
+    setTimeout(() => {
+      delay = Math.min(delay * 2, MAX_DELAY_MS);
+      reconnectPending = false;
+      connect();
+    }, delay);
+  }
+
   function connect(): void {
     const url = wsUrl(marketplaceUrl);
     console.log(`[marketplace] connecting to ${url}`);
@@ -74,12 +86,13 @@ export function connectMarketplace(cfg: AppConfig, marketplaceUrl: string, token
     };
 
     ws.onclose = () => {
-      console.log(`[marketplace] disconnected. Reconnecting in ${delay}ms…`);
-      setTimeout(() => { delay = Math.min(delay * 2, MAX_DELAY_MS); connect(); }, delay);
+      console.log("[marketplace] disconnected.");
+      scheduleReconnect();
     };
 
     ws.onerror = (err: Event) => {
       console.error("[marketplace] WebSocket error:", (err as ErrorEvent).message ?? err);
+      scheduleReconnect(); // onclose may not fire after handshake failure in Node.js 22
     };
   }
 
