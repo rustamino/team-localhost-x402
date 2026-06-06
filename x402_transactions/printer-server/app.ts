@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 
-import { paymentMiddleware } from "@x402/hono";
+import { paymentMiddlewareFromHTTPServer, x402HTTPResourceServer } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { ALGORAND_TESTNET_CAIP2, USDC_TESTNET_ASA_ID } from "@x402/avm";
@@ -98,17 +98,24 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
 
   const app = new Hono();
 
+  // httpServer is created with an empty routes object; routes are registered
+  // dynamically via compiledRoutes.push() in registerPaymentRequirement() below.
+  // paymentMiddleware() snapshots routes via Object.entries() at construction time
+  // and misses keys added later — that's why we push directly to compiledRoutes.
+  let httpServer: x402HTTPResourceServer | null = null;
+
   if (enableX402) {
     const facilitatorClient = new HTTPFacilitatorClient({ url: cfg.facilitatorUrl });
     const x402Server = new x402ResourceServer(facilitatorClient);
     const avmServerScheme = new ExactAvmScheme();
     x402Server.register(ALGORAND_TESTNET_CAIP2, avmServerScheme);
-    app.use(paymentMiddleware(paymentRequirements, x402Server));
+    httpServer = new x402HTTPResourceServer(x402Server, paymentRequirements);
+    app.use(paymentMiddlewareFromHTTPServer(httpServer));
   }
 
   function registerPaymentRequirement(job: PrintJob) {
     const routeKey = `GET /pay/${job.job_id}`;
-    paymentRequirements[routeKey] = {
+    const config = {
       accepts: [
         {
           scheme: "exact",
@@ -122,7 +129,28 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
       ],
       description: `3D print job ${job.job_id} on ${cfg.printerInfo.name}`,
     };
-    console.log(`Registered x402 payment route: GET /pay/${job.job_id}`);
+    paymentRequirements[routeKey] = config;
+
+    if (httpServer) {
+      // Bypass the snapshot: push directly into compiledRoutes so requiresPayment()
+      // sees this route on the next request.
+      const hs = httpServer as any;
+      const parsed = hs.parseRoutePattern(routeKey);
+      hs.compiledRoutes.push({ verb: parsed.verb, regex: parsed.regex, config, pattern: parsed.path });
+    }
+
+    console.log(`Registered x402 payment route: ${routeKey}`);
+  }
+
+  function deregisterPaymentRequirement(jobId: string) {
+    const routeKey = `GET /pay/${jobId}`;
+    delete paymentRequirements[routeKey];
+
+    if (httpServer) {
+      const hs = httpServer as any;
+      const idx = hs.compiledRoutes.findIndex((r: any) => r.pattern === `/pay/${jobId}`);
+      if (idx !== -1) hs.compiledRoutes.splice(idx, 1);
+    }
   }
 
   app.get("/info", c => c.json(cfg.printerInfo));
@@ -193,8 +221,7 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
     job.status = "paid";
     jobs.set(jobId, job);
 
-    const routeKey = `GET /pay/${jobId}`;
-    delete paymentRequirements[routeKey];
+    deregisterPaymentRequirement(jobId);
 
     console.log(`Payment confirmed for job ${jobId}`);
 

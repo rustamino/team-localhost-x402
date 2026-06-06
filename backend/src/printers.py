@@ -18,6 +18,8 @@ See architecture.md §2–3 for the full flow.
 """
 
 import asyncio
+import base64
+import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
@@ -136,13 +138,26 @@ def _parse_payment_requirement(body: dict[str, Any]) -> PaymentRequirement:
 async def _fetch_payment_requirement(
     client: httpx.AsyncClient, payment_url: str
 ) -> PaymentRequirement:
-    """GET the payment URL unauthenticated; expect a 402 with price metadata."""
+    """GET the payment URL unauthenticated; expect a 402 with price metadata.
+
+    x402 v2 encodes payment requirements in the ``PAYMENT-REQUIRED`` header as
+    base64(JSON).  The body is ``{}`` in v2.  v1 put the data in the body.
+    We try the header first and fall back to the body for v1 compatibility.
+    """
     resp = await client.get(payment_url)
     if resp.status_code != 402:
         raise ValueError(
             f"expected 402 from {payment_url}, got {resp.status_code}"
         )
-    return _parse_payment_requirement(resp.json())
+    header = resp.headers.get("payment-required")
+    if header:
+        try:
+            body = json.loads(base64.b64decode(header))
+        except Exception as exc:
+            raise ValueError(f"malformed PAYMENT-REQUIRED header: {exc}") from exc
+    else:
+        body = resp.json()
+    return _parse_payment_requirement(body)
 
 
 async def _build_offer(
