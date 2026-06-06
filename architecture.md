@@ -18,8 +18,10 @@ User's phone / browser
 Marketplace (cloud backend, Python)
   ├── REST + WebSocket API
   ├── Slicer (CuraEngine)       — STL → {grams, minutes}
-  ├── Offer Aggregator          — collects printer quotes
-  └── x402 Facilitator client   — verifies payment proof
+  └── Offer Aggregator          — collects printer quotes
+
+Algorand x402 Facilitator (external, provided by Algorand)
+  └── verifies payment proofs on behalf of resource servers
 
 Printer Servers (one per operator, Python)
   ├── Pricing Engine            — computes quote from {grams, minutes}
@@ -41,9 +43,10 @@ The user opens the Marketplace SPA, uploads an STL file, and enters a natural-la
 
 The Marketplace backend runs the STL through CuraEngine and obtains:
 - `grams` — estimated filament weight
-- `minutes` — estimated print time
+- `minutes` — reference print time (based on generic slicer settings)
+- `gcode_url` — download URL for the produced G-Code file
 
-Slicing happens exactly once, centrally. Individual printers never receive the raw STL at this stage.
+Slicing happens exactly once, centrally. Individual printers never receive the raw STL.
 
 ### 2. Collecting Offers
 
@@ -60,18 +63,21 @@ GET /info
 }
 ```
 
-For each registered printer Marketplace sends a pricing request:
+For each registered printer Marketplace sends a pricing request that includes the G-Code URL:
 
 ```json
 POST /quote
 {
   "job_id": "j_abc123",
   "grams": 12.4,
-  "minutes": 47
+  "minutes": 47,
+  "gcode_url": "https://marketplace.example.com/files/j_abc123.gcode"
 }
 ```
 
-The printer computes the price internally and responds with availability and a payment handle:
+The printer downloads the G-Code and re-estimates actual print time against its own motion
+settings (acceleration limits, max speeds). It computes the price from the corrected time,
+caches the G-Code locally, and responds with availability and a payment handle:
 
 ```json
 {
@@ -80,10 +86,12 @@ The printer computes the price internally and responds with availability and a p
 }
 ```
 
-`time_to_print` is already known from `minutes` sent in the request.
-`location` is already known from `/info`. Neither is repeated in the response.
+`location` is already known from `/info` and is not repeated.
+The authoritative price (based on actual estimated time) is returned in the 402 header on step 3,
+not here — keeping the quote response minimal.
 
-No STL file is transmitted at this stage.
+The G-Code is cached on the printer at this point. The winning printer can start immediately
+after payment confirmation, without a second download.
 
 ### 3. Fetching 402 Metadata (price discovery)
 
@@ -136,9 +144,9 @@ After the LLM selects offer `i`:
    marks the order as paid, and responds with `200 OK` to subsequent requests on `/pay/{job_id}`.
 
 6. The Marketplace polls `/pay/{job_id}` on the winning printer. Once the 402 is resolved,
-   it sends the STL file to that printer and commands it to start the job.
+   it sends a start command to that printer.
 
-7. The printer downloads the G-code (Marketplace sliced it), loads it into Moonraker,
+7. The printer already has the G-Code cached from the quote phase. It loads it into Moonraker
    and starts printing. Progress is streamed back to the SPA via WebSocket.
 
 This flow is non-custodial: the private key never leaves the user's device.
@@ -156,21 +164,24 @@ GET /info
      {"printer_id": "printer_42", "name": "...", "location": {...}, "capabilities": {...}}
 
 POST /quote
-  Body: {"job_id": "j_abc123", "grams": 12.4, "minutes": 47}
+  Body: {"job_id": "j_abc123", "grams": 12.4, "minutes": 47, "gcode_url": "https://.../files/j_abc123.gcode"}
   → 200 OK
      {"can_start_at": "2026-06-06T15:00:00Z", "payment_url": "https://.../pay/j_abc123"}
+  (printer downloads and caches G-Code, computes actual time vs own motion settings)
 
 GET /pay/{job_id}
   → 402 Payment Required
      X-PAYMENT-REQUIRED: {"scheme":"algorand","address":"ADDR","amount":670000,"asset":10458941,"nonce":"j_abc123"}
 
-GET /pay/{job_id}   (after on-chain payment detected)
-  → 200 OK
-     {"status": "paid", "tx_id": "..."}
+GET /pay/{job_id}   (with X-PAYMENT proof header)
+  X-PAYMENT: {"tx_id": "TXABC...", "scheme": "algorand", ...}
+  → printer calls Algorand facilitator to verify proof
+  → 200 OK  {"status": "paid", "tx_id": "TXABC..."}
 ```
 
-The printer's watcher (AlgorandSubscriber) monitors incoming USDC transfers to its address.
-On match (correct amount ± 5% tolerance, note == job_id), it marks the order paid.
+Payment verification is delegated to the Algorand official x402 facilitator.
+The printer does not need its own on-chain watcher — it calls the facilitator synchronously
+when the client retries the request with an `X-PAYMENT` proof header.
 
 ---
 
@@ -178,10 +189,15 @@ On match (correct amount ± 5% tolerance, note == job_id), it marks the order pa
 
 - Network: TestNet
 - USDC ASA ID: `10458941` (6 decimals; 1 USDC = 1 000 000 micro-USDC)
-- Payment verification: note field == job_id, amount in [expected, expected × 1.05]
-- Overpayment: auto-refunded by the printer's x402 server (separate USDC tx, note `refund_{job_id}`)
 - Finality: ~3.3 s (one Algorand round)
 - ARC-26 URI: `algorand://ADDR?amount=N&asset=10458941&note=job_id`
+- Facilitator: Algorand's official x402 facilitator (provided by Algorand Foundation)
+- Payment verification flow:
+  1. User submits tx via Pera Wallet; Algorand returns `tx_id`
+  2. Agent-client retries `GET /pay/{job_id}` with header `X-PAYMENT: {"tx_id": "...", ...}`
+  3. Printer calls Algorand facilitator to verify the proof
+  4. Facilitator confirms on-chain settlement → printer returns `200 OK`
+- Overpayment: auto-refunded by the printer's x402 server (separate USDC tx, note `refund_{job_id}`)
 
 ---
 
@@ -206,9 +222,10 @@ User
  │  upload STL + instruction
  ▼
 Marketplace
- │  slice STL → {grams, minutes}
- │  broadcast /quote to all printers
- │  collect quotes + fetch 402 metadata
+ │  slice STL → {grams, minutes, gcode_url}
+ │  broadcast /quote (with gcode_url) to all printers
+ │  printers download G-Code, compute actual time, cache locally
+ │  collect quotes + fetch 402 metadata (price = f(actual_minutes))
  │  LLM(instruction, quotes) → winning_index
  │  return winning quote + ARC-26 URI to SPA
  ▼
