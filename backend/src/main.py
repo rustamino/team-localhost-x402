@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from .config import AppConfig
 from .exchange import ExchangeRateService
 from .payer import PayerError, pay_offer
-from .printers import JobRequest, collect_offers
+from .printers import CollectResult, JobRequest, collect_offers
 from .selection import Selection, select_offer
 
 logging.basicConfig(level=logging.INFO)
@@ -57,13 +57,13 @@ async def offers(req: OffersRequest) -> dict:
     except Exception:  # noqa: BLE001 — never block offers on a rate hiccup
         rate = None
 
-    collected = await collect_offers(
+    result: CollectResult = await collect_offers(
         config.printers, job, rate, timeout=config.printer_timeout
     )
 
     try:
         decision = await select_offer(
-            collected,
+            result.offers,
             req.instruction,
             openai_api_key=config.openai_api_key,
             model=config.openai_model,
@@ -77,10 +77,11 @@ async def offers(req: OffersRequest) -> dict:
         )
 
     return {
-        "offers":         [o.to_dict() for o in collected],
-        "selected_index": decision.selected_index,
-        "confidence":     decision.confidence,
-        "reasoning":      decision.reasoning,
+        "offers":          [o.to_dict() for o in result.offers],
+        "selected_index":  decision.selected_index,
+        "confidence":      decision.confidence,
+        "reasoning":       decision.reasoning,
+        "printer_errors":  result.errors,   # [{url, error}] for each unreachable printer
     }
 
 

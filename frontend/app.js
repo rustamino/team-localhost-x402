@@ -12,6 +12,10 @@ const state = {
   wsClient:        null,
 };
 
+// Slicer output. Hardcoded until POST /api/jobs + the slicer container are wired;
+// these values are sent to the real backend /api/offers so printers can quote.
+const SLICE = { grams: 12.4, minutes: 47 };
+
 // ─── screen routing ───────────────────────────────────────────────────────────
 
 function showScreen(id) {
@@ -69,16 +73,17 @@ function setFile(f) {
 }
 
 btnFind.addEventListener("click", async () => {
+  const instr = instruction.value.trim();
   if (uploadedFile) {
-    await startWithFile(uploadedFile);
+    await startWithFile(uploadedFile, instr);
   } else {
-    await startWithSearch(searchText.value.trim());
+    await startWithSearch(searchText.value.trim(), instr);
   }
 });
 
 // ─── screen 1 → 2: model search ──────────────────────────────────────────────
 
-async function startWithSearch(query) {
+async function startWithSearch(query, instr) {
   showScreen("s-search");
   document.getElementById("search-heading").textContent = `Results for "${query}"`;
   const list = document.getElementById("model-list");
@@ -103,7 +108,7 @@ async function startWithSearch(query) {
     `;
     card.querySelector(".btn").addEventListener("click", () => {
       state.jobId = null;  // will be set after POST /api/jobs with model URL
-      startProcessing({ name: m.name, modelUrl: m.url });
+      startProcessing({ name: m.name, modelUrl: m.url, instruction: instr });
     });
     list.appendChild(card);
   });
@@ -111,15 +116,16 @@ async function startWithSearch(query) {
 
 // ─── screen 1 → 3: direct file upload ────────────────────────────────────────
 
-async function startWithFile(file) {
-  startProcessing({ name: file.name, file });
+async function startWithFile(file, instr) {
+  startProcessing({ name: file.name, file, instruction: instr });
 }
 
 // ─── screen 3: processing ────────────────────────────────────────────────────
 
-async function startProcessing({ name, file, modelUrl }) {
+async function startProcessing({ name, file, modelUrl, instruction }) {
   showScreen("s-processing");
   document.getElementById("step-slicing-sub").textContent = name;
+  state.jobId = state.jobId || ("j_" + Math.random().toString(36).slice(2, 10));
 
   // animate slicing bar
   const bar = document.getElementById("slicing-bar");
@@ -151,24 +157,35 @@ async function startProcessing({ name, file, modelUrl }) {
   const stepQuotes = document.getElementById("step-quotes");
   stepQuotes.classList.replace("pending", "active");
   stepQuotes.querySelector(".step-icon").textContent = "⟳";
+  document.getElementById("step-quotes-sub").textContent = "Contacting printer servers…";
 
-  // TODO: poll /api/jobs/{id} until status === "quoted"
-  // poll for quotes
-  let received = 0;
-  const total = 5;
-  const fakePoll = setInterval(() => {
-    received = Math.min(received + 1, total);
-    document.getElementById("step-quotes-sub").textContent =
-      `${received}/${total} printers responded`;
-    if (received === total) clearInterval(fakePoll);
-  }, 500);
+  // Real call: collect quotes from all registered printer servers
+  let data;
+  try {
+    data = await requestOffers(instruction);
+  } catch (err) {
+    console.error("failed to load offers from backend:", err);
+    data = {
+      offers: [],
+      selectedIndex: null,
+      reasoning: "Could not reach the marketplace backend.",
+      printerErrors: [{ url: location.origin, error: err.message }],
+    };
+  }
 
-  await sleep(2800);
+  const okCount  = data.offers.length;
+  const errCount = (data.printerErrors || []).length;
+  const total    = okCount + errCount;
+  const allFailed = total > 0 && okCount === 0;
 
   stepQuotes.classList.replace("active", "done");
-  stepQuotes.querySelector(".step-icon").textContent = "✓";
+  stepQuotes.querySelector(".step-icon").textContent = allFailed ? "✗" : "✓";
+  document.getElementById("step-quotes-sub").textContent =
+    total === 0
+      ? "No printers configured"
+      : `${okCount} / ${total} printer${total !== 1 ? "s" : ""} responded`;
 
-  showOffersScreen(mockOffers());
+  showOffersScreen(data);
 }
 
 // ─── screen 4: offers ─────────────────────────────────────────────────────────
@@ -179,6 +196,33 @@ function showOffersScreen(data) {
 
   const list = document.getElementById("offer-list");
   list.innerHTML = "";
+
+  if (!data.offers.length) {
+    document.getElementById("btn-pay-offer").disabled = true;
+
+    const errors = data.printerErrors || [];
+    let errHtml = "";
+    if (errors.length) {
+      errHtml =
+        `<div style="margin-top:.8rem;font-size:.82rem;color:var(--err,#e55)">` +
+        `<strong>Connection errors (${errors.length}):</strong>` +
+        `<ul style="margin:.4rem 0 0;padding-left:1.2rem;word-break:break-all">` +
+        errors.map(e =>
+          `<li><code>${escHtml(e.url)}</code><br>${escHtml(e.error)}</li>`
+        ).join("") +
+        `</ul></div>`;
+    }
+
+    list.innerHTML =
+      `<div style="font-size:.9rem;line-height:1.5">` +
+      `<span style="color:var(--text2)">No printers responded.</span><br>` +
+      `Check that the printer servers are running and that the backend's ` +
+      `<code>PRINTERS</code> env var lists them.` +
+      (data.reasoning ? `<br><br><em>${escHtml(data.reasoning)}</em>` : "") +
+      errHtml +
+      `</div>`;
+    return;
+  }
 
   data.offers.forEach((o, i) => {
     const card = document.createElement("div");
@@ -416,25 +460,59 @@ function mockSearchResults(query) {
   ];
 }
 
-function mockOffers() {
-  const offers = [
-    { printerName: "BerlinMaker FDM-1", city: "Berlin", coords: "52.4900,13.3900",
-      canStartHuman: "in 1h 45m", priceEur: "0.61", priceUsdc: "0.670000",
-      paymentUrl: "https://printer1.example.com/pay/j_abc" },
-    { printerName: "Hamburg3D Pro",     city: "Hamburg", coords: "53.5500,10.0000",
-      canStartHuman: "tomorrow 09:00", priceEur: "0.54", priceUsdc: "0.591000",
-      paymentUrl: "https://printer2.example.com/pay/j_abc" },
-    { printerName: "MakerSpace Köln",   city: "Cologne", coords: "50.9300,6.9600",
-      canStartHuman: "Friday",         priceEur: "0.49", priceUsdc: "0.535000",
-      paymentUrl: "https://printer3.example.com/pay/j_abc" },
-  ];
+// ─── real offers (POST /api/offers) ───────────────────────────────────────────
+
+async function requestOffers(instruction) {
+  const res = await fetch("/api/offers", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      job_id:      state.jobId,
+      grams:       SLICE.grams,
+      minutes:     SLICE.minutes,
+      gcode_url:   `${location.origin}/files/${state.jobId}.gcode`,
+      instruction: instruction || null,
+    }),
+  });
+  if (!res.ok) throw new Error(`/api/offers HTTP ${res.status}`);
+  const data = await res.json();
   return {
-    offers,
-    selectedIndex: 0,
-    reasoning: "Chose BerlinMaker: only offer starting today, price is reasonable.",
+    offers:        (data.offers || []).map(mapOffer),
+    selectedIndex: data.selected_index ?? null,
+    reasoning:     data.reasoning || "",
+    printerErrors: data.printer_errors || [],   // [{url, error}] for unreachable printers
   };
+}
+
+function mapOffer(o) {
+  const loc = o.location || {};
+  return {
+    printerName:   o.name,
+    city:          loc.city || "",
+    coords:        (loc.lat != null && loc.lon != null) ? `${loc.lat},${loc.lon}` : "",
+    canStartHuman: humanizeStart(o.can_start_at),
+    priceEur:      o.price_eur ?? "—",
+    priceUsdc:     o.price_usdc,
+    paymentUrl:    o.payment_url,
+  };
+}
+
+function humanizeStart(iso) {
+  if (!iso) return "soon";
+  const t = new Date(iso);
+  if (isNaN(t)) return iso;
+  const diffMin = Math.round((t - Date.now()) / 60000);
+  if (diffMin <= 0) return "now";
+  if (diffMin < 60) return `in ${diffMin}m`;
+  const h = Math.floor(diffMin / 60), m = diffMin % 60;
+  return m ? `in ${h}h ${m}m` : `in ${h}h`;
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function escHtml(str) {
+  return String(str ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}

@@ -150,8 +150,13 @@ async def _build_offer(
     base_url: str,
     job: JobRequest,
     rate: RateSnapshot | None,
-) -> PrinterOffer | None:
-    """Run /info → /quote → 402 for one printer; None on any failure."""
+) -> tuple[PrinterOffer | None, dict[str, str] | None]:
+    """Run /info → /quote → 402 for one printer.
+
+    Returns ``(offer, None)`` on success or ``(None, error_dict)`` on failure so
+    the caller can surface connection problems to the user instead of silently
+    dropping them.
+    """
     try:
         info_resp = await client.get(f"{base_url}/info")
         info_resp.raise_for_status()
@@ -168,7 +173,7 @@ async def _build_offer(
         payment = await _fetch_payment_requirement(client, payment_url)
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         log.warning("printer %s skipped: %s", base_url, exc)
-        return None
+        return None, {"url": base_url, "error": str(exc)}
 
     price_usdc = (Decimal(payment.amount) / MICRO_USDC)
     price_eur = (
@@ -187,7 +192,14 @@ async def _build_offer(
         payment=payment,
         price_usdc=price_usdc,
         price_eur=price_eur,
-    )
+    ), None
+
+
+@dataclass(frozen=True)
+class CollectResult:
+    """Outcome of a batch collect_offers call."""
+    offers: list[PrinterOffer]
+    errors: list[dict[str, str]]   # [{"url": "...", "error": "..."}, ...]
 
 
 async def collect_offers(
@@ -195,15 +207,17 @@ async def collect_offers(
     job: JobRequest,
     rate: RateSnapshot | None = None,
     timeout: float = 8.0,
-) -> list[PrinterOffer]:
-    """Query all printers concurrently and return the successful offers."""
+) -> CollectResult:
+    """Query all printers concurrently; return successful offers and any errors."""
     if not printer_urls:
         log.warning("no printers configured (set the PRINTERS env var)")
-        return []
+        return CollectResult(offers=[], errors=[])
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        results = await asyncio.gather(
+        pairs = await asyncio.gather(
             *(_build_offer(client, url, job, rate) for url in printer_urls)
         )
 
-    return [offer for offer in results if offer is not None]
+    offers = [offer for offer, _ in pairs if offer is not None]
+    errors = [err for _, err in pairs if err is not None]
+    return CollectResult(offers=offers, errors=errors)

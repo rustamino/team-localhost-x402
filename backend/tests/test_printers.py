@@ -7,6 +7,7 @@ import pytest
 
 from src.exchange import RateSnapshot
 from src.printers import (
+    CollectResult,
     JobRequest,
     PrinterOffer,
     _parse_payment_requirement,
@@ -86,10 +87,12 @@ class TestCollectOffers:
 
         monkeypatch.setattr(httpx, "AsyncClient", patched_client)
 
-        offers = asyncio.run(collect_offers(("http://printer",), JOB, RATE_0916))
+        result = asyncio.run(collect_offers(("http://printer",), JOB, RATE_0916))
 
-        assert len(offers) == 1
-        offer = offers[0]
+        assert isinstance(result, CollectResult)
+        assert len(result.offers) == 1
+        assert result.errors == []
+        offer = result.offers[0]
         assert isinstance(offer, PrinterOffer)
         assert offer.printer_id == "printer_42"
         assert offer.name == "BerlinMaker FDM-1"
@@ -100,7 +103,7 @@ class TestCollectOffers:
         # 0.67 USDC × 0.9160 ≈ 0.61 EUR
         assert offer.price_eur == Decimal("0.61")
 
-    def test_skips_failing_printer(self, monkeypatch):
+    def test_skips_failing_printer_and_reports_error(self, monkeypatch):
         def failing_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(500)
 
@@ -112,11 +115,18 @@ class TestCollectOffers:
             lambda *a, **k: real_client(*a, **{**k, "transport": transport}),
         )
 
-        offers = asyncio.run(collect_offers(("http://printer",), JOB, RATE_0916))
-        assert offers == []
+        result = asyncio.run(collect_offers(("http://printer",), JOB, RATE_0916))
+        assert isinstance(result, CollectResult)
+        assert result.offers == []
+        assert len(result.errors) == 1
+        assert result.errors[0]["url"] == "http://printer"
+        assert result.errors[0]["error"]  # non-empty error message
 
     def test_no_printers_returns_empty(self):
-        assert asyncio.run(collect_offers((), JOB, RATE_0916)) == []
+        result = asyncio.run(collect_offers((), JOB, RATE_0916))
+        assert isinstance(result, CollectResult)
+        assert result.offers == []
+        assert result.errors == []
 
 
 def _make_offer() -> PrinterOffer:
