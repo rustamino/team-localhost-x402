@@ -10,9 +10,10 @@ from pydantic import BaseModel
 from .config import AppConfig
 from .exchange import ExchangeRateService
 from .printers import JobRequest, collect_offers
-from .selection import select_offer
+from .selection import Selection, select_offer
 
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 _DEFAULT_FRONTEND = Path(__file__).parent.parent.parent / "frontend"
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", str(_DEFAULT_FRONTEND)))
@@ -40,8 +41,8 @@ async def offers(req: OffersRequest) -> dict:
     """Collect live quotes from every registered printer and pick the Agent's Pick.
 
     Replaces the hard-coded mock offers: fans out /info + /quote + 402 price
-    discovery to all printers in the PRINTERS env var, then selects an offer
-    (currently always index 0; OpenAI selection comes next).
+    discovery to all printers in the PRINTERS env var, then asks OpenAI to pick
+    the best offer for the user's instruction (the "Agent's Pick").
     """
     job = JobRequest(
         job_id=req.job_id,
@@ -58,7 +59,21 @@ async def offers(req: OffersRequest) -> dict:
     collected = await collect_offers(
         config.printers, job, rate, timeout=config.printer_timeout
     )
-    decision = select_offer(collected, req.instruction)
+
+    try:
+        decision = await select_offer(
+            collected,
+            req.instruction,
+            openai_api_key=config.openai_api_key,
+            model=config.openai_model,
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail offers on a selection hiccup
+        log.warning("agentic offer selection failed: %s", exc)
+        decision = Selection(
+            selected_index=None,
+            confidence="low",
+            reasoning=f"Agent's Pick unavailable: {exc}",
+        )
 
     return {
         "offers":         [o.to_dict() for o in collected],

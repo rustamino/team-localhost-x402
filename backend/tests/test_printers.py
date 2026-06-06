@@ -1,4 +1,5 @@
 import asyncio
+import json
 from decimal import Decimal
 
 import httpx
@@ -118,22 +119,81 @@ class TestCollectOffers:
         assert asyncio.run(collect_offers((), JOB, RATE_0916)) == []
 
 
-class TestSelectOffer:
-    def test_picks_index_zero(self):
-        offer = PrinterOffer(
-            printer_id="p1",
-            name="P1",
-            location={},
-            capabilities={},
-            can_start_at="",
-            payment_url="",
-            payment=_parse_payment_requirement(PAYMENT_402),
-            price_usdc=Decimal("0.67"),
-            price_eur=Decimal("0.73"),
-        )
-        decision = select_offer([offer, offer])
-        assert decision.selected_index == 0
+def _make_offer() -> PrinterOffer:
+    return PrinterOffer(
+        printer_id="p1",
+        name="P1",
+        location={"city": "Berlin"},
+        capabilities={},
+        can_start_at="",
+        payment_url="",
+        payment=_parse_payment_requirement(PAYMENT_402),
+        price_usdc=Decimal("0.67"),
+        price_eur=Decimal("0.73"),
+    )
 
-    def test_empty_offers_returns_none(self):
-        decision = select_offer([])
+
+def _openai_response(selected_index, confidence="high", reason="picked") -> dict:
+    """Build a minimal OpenAI Responses API payload carrying the JSON result."""
+    payload = {
+        "selected_index": selected_index,
+        "confidence": confidence,
+        "reason": reason,
+    }
+    return {
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": json.dumps(payload)},
+                ]
+            }
+        ]
+    }
+
+
+def _patch_openai(monkeypatch, response_json, status=200):
+    """Make httpx.AsyncClient route OpenAI calls to a canned response."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.openai.com"
+        return httpx.Response(status, json=response_json)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *a, **k: real_client(*a, **{**k, "transport": transport}),
+    )
+
+
+class TestSelectOffer:
+    def test_picks_model_index(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        _patch_openai(monkeypatch, _openai_response(selected_index=1))
+
+        offers = [_make_offer(), _make_offer()]
+        decision = asyncio.run(select_offer(offers, "cheapest in Berlin"))
+
+        assert decision.selected_index == 1
+        assert decision.confidence == "high"
+        assert decision.reasoning == "picked"
+
+    def test_empty_offers_returns_none(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        decision = asyncio.run(select_offer([]))
         assert decision.selected_index is None
+        assert decision.confidence == "low"
+
+    def test_missing_api_key_raises(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(RuntimeError):
+            asyncio.run(select_offer([_make_offer()]))
+
+    def test_invalid_index_falls_back_to_none(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        _patch_openai(monkeypatch, _openai_response(selected_index=5))
+
+        decision = asyncio.run(select_offer([_make_offer()]))
+        assert decision.selected_index is None
+        assert decision.confidence == "low"
