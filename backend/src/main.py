@@ -119,9 +119,11 @@ async def proxy_printer_pay(printer_id: str, job_id: str, request: Request) -> J
         if v:
             forward[h] = v
 
+    qs = str(request.url.query)
+    pay_path = f"/pay/{job_id}" + (f"?{qs}" if qs else "")
     try:
         resp = await conn.request(
-            "GET", f"/pay/{job_id}",
+            "GET", pay_path,
             headers=forward or None,
             timeout=15.0,
         )

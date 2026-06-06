@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import logging
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,7 @@ class CheckoutIntent:
     amount_micro_usdc: int           # what the user must send
     payment_url:       str           # printer x402 proxy URL
     status:            str = "pending"   # pending|paid|forwarded|error
+    user_address:      str | None = None  # payer's Algorand address (from txn sender)
     user_tx_id:        str | None = None
     printer_tx_id:     str | None = None
     error:             str | None = None
@@ -40,6 +42,7 @@ class CheckoutIntent:
         return {
             "checkout_id":   self.checkout_id,
             "status":        self.status,
+            "user_address":  self.user_address,
             "user_tx_id":    self.user_tx_id,
             "printer_tx_id": self.printer_tx_id,
             "error":         self.error,
@@ -150,15 +153,25 @@ async def watch(marketplace_wallet: str, pay_offer_fn, poll_sec: float = 5.0) ->
                     )
                     continue
 
-                intent.status    = "paid"
-                intent.user_tx_id = txn.get("id")
-                log.info("job %s: user payment confirmed tx=%s", intent.job_id, intent.user_tx_id)
+                pay = txn.get("asset-transfer-transaction", {})
+                intent.user_address = pay.get("sender")
+                intent.status       = "paid"
+                intent.user_tx_id   = txn.get("id")
+                log.info(
+                    "job %s: user payment confirmed tx=%s from %s",
+                    intent.job_id, intent.user_tx_id,
+                    (intent.user_address or "")[-8:],
+                )
                 asyncio.create_task(_forward(intent, pay_offer_fn))
 
 
 async def _forward(intent: CheckoutIntent, pay_offer_fn) -> None:
     try:
-        result = await pay_offer_fn(intent.payment_url)
+        url = intent.payment_url
+        if intent.user_address:
+            sep = "&" if "?" in url else "?"
+            url += sep + "user_address=" + urllib.parse.quote(intent.user_address, safe="")
+        result = await pay_offer_fn(url)
         if result.ok:
             intent.status       = "forwarded"
             intent.printer_tx_id = result.tx_id

@@ -197,6 +197,7 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
       .map(j => ({
         job_id: j.job_id,
         price_usdc: j.price_usdc,
+        payer_short: j.payer_short,
         status: j.status,
         started_at: j.started_at,
         eta: j.eta,
@@ -267,9 +268,11 @@ export function createApp(cfg: AppConfig, { enableX402 = true }: { enableX402?: 
     const job = jobs.get(jobId);
     if (!job) return c.json({ error: "Unknown job_id" }, 404);
 
-    // Extract payer address from the x402 AVM payment header
+    // Prefer the real user address forwarded by the marketplace as a query param.
+    // Fall back to extracting the sender from the x402 payment header (agent wallet).
+    const queryAddr = c.req.query("user_address") ?? null;
     const paymentHeader = c.req.header("payment-signature") ?? c.req.header("x-payment");
-    const payerAddress = extractPayerAddress(paymentHeader);
+    const payerAddress = queryAddr || extractPayerAddress(paymentHeader);
     job.payer_address = payerAddress;
     job.payer_short = payerAddress ? payerAddress.slice(-6) : null;
 
