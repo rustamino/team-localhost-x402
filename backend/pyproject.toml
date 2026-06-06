@@ -14,8 +14,9 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",   # file upload
     "aiofiles>=24.1",             # StaticFiles
-    "httpx2>=0.28",               # HTTP client for printer calls + TestClient
+    "httpx>=0.28",                # HTTP client for printer calls + TestClient
     "openai>=1.40",               # LLM offer selection
+    "python-dotenv>=1.0",         # load backend/.env
 ]
 
 [dependency-groups]

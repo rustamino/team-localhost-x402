@@ -1,19 +1,71 @@
+import logging
 import os
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from .config import AppConfig
+from .exchange import ExchangeRateService
+from .printers import JobRequest, collect_offers
+from .selection import select_offer
+
+logging.basicConfig(level=logging.INFO)
 
 _DEFAULT_FRONTEND = Path(__file__).parent.parent.parent / "frontend"
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", str(_DEFAULT_FRONTEND)))
+
+config = AppConfig.from_env()
+exchange = ExchangeRateService(ttl=config.rate_cache_ttl)
 
 app = FastAPI(title="3D Print Marketplace")
 
 # --- API routers go here (registered before static mount) ---
 # app.include_router(jobs.router,     prefix="/api")
-# app.include_router(printers.router, prefix="/api")
 # app.include_router(search.router,   prefix="/api")
+
+
+class OffersRequest(BaseModel):
+    job_id: str
+    grams: float
+    minutes: float
+    gcode_url: str
+    instruction: str | None = None
+
+
+@app.post("/api/offers")
+async def offers(req: OffersRequest) -> dict:
+    """Collect live quotes from every registered printer and pick the Agent's Pick.
+
+    Replaces the hard-coded mock offers: fans out /info + /quote + 402 price
+    discovery to all printers in the PRINTERS env var, then selects an offer
+    (currently always index 0; OpenAI selection comes next).
+    """
+    job = JobRequest(
+        job_id=req.job_id,
+        grams=req.grams,
+        minutes=req.minutes,
+        gcode_url=req.gcode_url,
+    )
+
+    try:
+        rate = exchange.get()
+    except Exception:  # noqa: BLE001 — never block offers on a rate hiccup
+        rate = None
+
+    collected = await collect_offers(
+        config.printers, job, rate, timeout=config.printer_timeout
+    )
+    decision = select_offer(collected, req.instruction)
+
+    return {
+        "offers":         [o.to_dict() for o in collected],
+        "selected_index": decision.selected_index,
+        "confidence":     decision.confidence,
+        "reasoning":      decision.reasoning,
+    }
 
 # StaticFiles html=True resolves "/" → "index.html" but NOT "/admin" → "admin.html"
 # (it would need "admin/index.html" for that). Explicit routes avoid the ambiguity.
