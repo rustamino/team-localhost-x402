@@ -7,6 +7,7 @@
     "dev": "node --import tsx/esm --watch server.ts"
   },
   "dependencies": {
+    "@hono/node-server": "^1.0.0",
     "@x402/avm": "^2.14.0",
     "@x402/core": "^2.14.0",
     "@x402/hono": "^2.14.0",

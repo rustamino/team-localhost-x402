@@ -292,29 +292,26 @@ function showAuthorizeScreen(offer) {
   document.getElementById("auth-price-eur").textContent    = "€" + offer.priceEur;
   document.getElementById("auth-price-usdc").textContent   = offer.priceUsdc + " USDC";
 
-  // TODO: generate real ephemeral keypair with algosdk
-  // const account = algosdk.generateAccount();
-  // state.sessionAddr = account.addr;
-  // state.sessionSk   = account.sk;
-  state.sessionAddr = "SESSWALLET7GHK3XQP3ABCDEFGH" + Math.random().toString(36).slice(2, 8).toUpperCase();
+  const avmAddress = offer.avmAddress;
+  const microUsdc  = offer.microUsdc;
+  const assetId    = offer.assetId;
+  const arc26      = `algorand://${avmAddress}?amount=${microUsdc}&asset=${assetId}`;
 
-  document.getElementById("session-addr-display").textContent = state.sessionAddr;
+  document.getElementById("session-addr-display").textContent = avmAddress;
 
-  const microUsdc = Math.round(parseFloat(offer.priceUsdc) * 1_000_000);
-  const arc26 = `algorand://${state.sessionAddr}?amount=${microUsdc}&asset=10458941`;
-
-  // render QR
-  QRCode.toCanvas(document.getElementById("qr-canvas"), arc26,
-    { width: 200, color: { dark: "#000", light: "#fff" } });
+  // render QR via toDataURL — works in hidden sections, errors are catchable
+  QRCode.toDataURL(arc26, { width: 200, margin: 2, color: { dark: "#000", light: "#fff" } })
+    .then(url => { document.getElementById("qr-img").src = url; })
+    .catch(err => { console.error("QR render failed:", err); });
 
   // Pera deeplink
   document.getElementById("btn-open-pera").onclick = () => {
-    window.open(`perawallet://transfer?${new URLSearchParams({ asset: "10458941", to: state.sessionAddr, amount: microUsdc })}`, "_blank");
+    window.open(`perawallet://transfer?${new URLSearchParams({ asset: String(assetId), to: avmAddress, amount: String(microUsdc) })}`, "_blank");
   };
 
   // copy address
   document.getElementById("btn-copy-addr").onclick = () => {
-    navigator.clipboard.writeText(state.sessionAddr);
+    navigator.clipboard.writeText(avmAddress);
     document.getElementById("btn-copy-addr").textContent = "✓";
     setTimeout(() => document.getElementById("btn-copy-addr").textContent = "copy", 1500);
   };
@@ -486,6 +483,7 @@ async function requestOffers(instruction) {
 
 function mapOffer(o) {
   const loc = o.location || {};
+  const pr  = o.payment_required || {};
   return {
     printerName:   o.name,
     city:          loc.city || "",
@@ -494,6 +492,9 @@ function mapOffer(o) {
     priceEur:      o.price_eur ?? "—",
     priceUsdc:     o.price_usdc,
     paymentUrl:    o.payment_url,
+    avmAddress:    pr.address || "",
+    microUsdc:     pr.amount  || Math.round(parseFloat(o.price_usdc) * 1_000_000),
+    assetId:       pr.asset   || 10458941,
   };
 }
 
