@@ -22,45 +22,47 @@ klipperscreen/
 
 ### Setup on Pi
 
+User: `netbug`, home: `/home/netbug`, Node via nvm.
+
 ```bash
-# Install Node.js 22
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs
+# Install Node.js via nvm (if not present)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+source ~/.bashrc
+nvm install 22
 
 # Deploy
-cp -r print_server /home/pi/print_server
-cd /home/pi/print_server
+cp -r print_server /home/netbug/print_server
+cd /home/netbug/print_server
 cp .env.example .env   # fill in your values
 npm install
-npm start
 ```
 
 ### systemd service
 
-Save to `/etc/systemd/system/x402-printer.service`:
-
-```ini
+```bash
+sudo tee /etc/systemd/system/x402-printer.service << 'EOF'
 [Unit]
-Description=x402 Printer Server
-After=network-online.target moonraker.service
-Wants=network-online.target
+Description=x402 Print Server
+After=time-sync.target network-online.target moonraker.service
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/print_server
-EnvironmentFile=/home/pi/print_server/.env
-ExecStart=/usr/bin/node --import tsx/esm server.ts
+User=netbug
+WorkingDirectory=/home/netbug/print_server
+EnvironmentFile=/home/netbug/print_server/.env
+ExecStart=/home/netbug/.nvm/versions/node/v22.22.3/bin/node --import tsx/esm server.ts
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-```
+EOF
 
-```bash
+sudo systemctl daemon-reload
 sudo systemctl enable x402-printer
 sudo systemctl start x402-printer
+systemctl status x402-printer
 ```
 
 ### /status endpoint
@@ -89,7 +91,7 @@ the signed transaction in the `payment-signature` (x402 AVM header). Not related
 
 ```bash
 sudo cp klipperscreen_patches/panels/x402_queue.py \
-       /home/pi/KlipperScreen/panels/x402_queue.py
+       /home/netbug/KlipperScreen/panels/x402_queue.py
 ```
 
 Install Python dependencies if not present:
@@ -104,7 +106,7 @@ Option A — use the provided config (replaces home menu):
 
 ```bash
 sudo cp klipperscreen_patches/config/KlipperScreen.conf \
-       /home/pi/printer_data/config/KlipperScreen.conf
+       /home/netbug/printer_data/config/KlipperScreen.conf
 ```
 
 Option B — add just the panel to your existing config:
