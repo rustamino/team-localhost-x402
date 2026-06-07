@@ -12,7 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from .checkout import CheckoutIntent, store as checkout_store, watch as checkout_watch
+from .checkout import (
+    CheckoutIntent, store as checkout_store, watch as checkout_watch,
+    _fetch_txns as _algo_fetch_txns, _note_text as _algo_note_text,
+    _micro_usdc_received as _algo_received, _forward as _checkout_forward,
+    USDC_ASSET_ID,
+)
 from .config import AppConfig
 from .exchange import ExchangeRateService
 from .payer import PayerError, pay_offer
@@ -197,6 +202,111 @@ async def offers(req: OffersRequest) -> dict:
     }
 
 
+@app.get("/api/info")
+async def marketplace_info() -> dict:
+    return {
+        "marketplace_wallet": config.marketplace_wallet,
+        "usdc_asset_id":      USDC_ASSET_ID,
+    }
+
+
+async def _query_user_balance(user_id: str) -> dict:
+    """Return received/spent/available µUSDC and the latest sender for user_id."""
+    loop = asyncio.get_event_loop()
+    txns = await loop.run_in_executor(
+        None, _algo_fetch_txns, config.marketplace_wallet, 0, 200
+    )
+    received_micro = 0
+    latest_sender: str | None = None
+    for txn in txns:
+        note = _algo_note_text(txn)
+        if note != user_id:
+            continue
+        amount = _algo_received(txn, config.marketplace_wallet)
+        if amount > 0:
+            received_micro += amount
+            sender = txn.get("sender")
+            # Prefer an external sender (not the marketplace paying itself)
+            if sender and sender != config.marketplace_wallet:
+                latest_sender = sender
+            elif latest_sender is None:
+                latest_sender = sender
+
+    spent_micro = checkout_store.get_user_spent_micro(user_id)
+    available_micro = max(0, received_micro - spent_micro)
+    return {
+        "received_micro": received_micro,
+        "spent_micro":    spent_micro,
+        "available_micro": available_micro,
+        "latest_sender":  latest_sender,
+    }
+
+
+@app.get("/api/balance/{user_id}")
+async def get_user_balance(user_id: str) -> dict:
+    if not config.marketplace_wallet:
+        raise HTTPException(status_code=503, detail="MARKETPLACE_WALLET not configured")
+    bal = await _query_user_balance(user_id)
+    return {
+        "user_id":        user_id,
+        "received_usdc":  bal["received_micro"] / 1_000_000,
+        "spent_usdc":     bal["spent_micro"] / 1_000_000,
+        "available_usdc": bal["available_micro"] / 1_000_000,
+        "latest_sender":  bal["latest_sender"],
+    }
+
+
+class SubmitPrintRequest(BaseModel):
+    payment_url: str
+    job_id:      str
+    price_usdc:  str   # string to preserve precision
+    user_id:     str
+
+
+@app.post("/api/submit-print")
+async def submit_print(req: SubmitPrintRequest) -> dict:
+    """Submit a print job for a user who already pre-funded their user_id balance.
+
+    Checks available balance, reserves the amount, fires the printer payment
+    asynchronously, and returns a checkout_id for polling via GET /api/checkout/{id}.
+    """
+    if not config.marketplace_wallet:
+        raise HTTPException(status_code=503, detail="MARKETPLACE_WALLET not configured")
+
+    try:
+        price = Decimal(req.price_usdc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid price_usdc")
+
+    fee = config.marketplace_fee_pct / 100
+    charged = price * (1 + fee)
+    micro_usdc = int((charged * 1_000_000).to_integral_value(rounding=ROUND_UP))
+
+    bal = await _query_user_balance(req.user_id)
+    if bal["available_micro"] < micro_usdc:
+        avail = bal["available_micro"] / 1_000_000
+        need  = micro_usdc / 1_000_000
+        raise HTTPException(
+            status_code=402,
+            detail=f"Insufficient balance: {avail:.6f} USDC available, need {need:.6f} USDC",
+        )
+
+    intent = CheckoutIntent(
+        checkout_id=req.job_id,
+        job_id=req.job_id,
+        amount_micro_usdc=micro_usdc,
+        payment_url=req.payment_url,
+        status="paid",
+        user_address=bal["latest_sender"],
+        user_id=req.user_id,
+    )
+    checkout_store.add(intent)
+
+    asyncio.create_task(_checkout_forward(intent, pay_offer))
+
+    return {"checkout_id": req.job_id}
+
+
 class CheckoutRequest(BaseModel):
     payment_url: str   # printer x402 proxy URL (from offer)
     job_id: str
@@ -316,6 +426,6 @@ if FRONTEND_DIR.is_dir():
 
 def serve() -> None:
     import uvicorn
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.main:app", host="0.0.0.0", port=config.port)
 
 

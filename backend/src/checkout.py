@@ -6,15 +6,23 @@ indexer for incoming USDC to the marketplace wallet.  On detection it
 forwards the job to the printer via the x402 payer subprocess.
 
 Intent lifecycle:  pending → paid → forwarded | error
+                   (pre-paid)   paid → forwarded | error
+
+Persistence: SQLite (stdlib).  DB path from CHECKOUT_DB_PATH env var
+(default: checkout.db) — survives uvicorn restarts.
 """
 
 import asyncio
 import base64
 import json
 import logging
+import os
+import sqlite3
+import threading
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -23,6 +31,8 @@ USDC_ASSET_ID = 10_458_941          # testnet USDC ASA
 _INDEXER = "https://testnet-idx.algonode.cloud"
 _NODE    = "https://testnet-api.algonode.cloud"
 
+_DB_PATH = Path(os.getenv("CHECKOUT_DB_PATH", "checkout.db"))
+
 
 # ── data model ────────────────────────────────────────────────────────────────
 
@@ -30,13 +40,14 @@ _NODE    = "https://testnet-api.algonode.cloud"
 class CheckoutIntent:
     checkout_id:       str           # == job_id
     job_id:            str
-    amount_micro_usdc: int           # what the user must send
+    amount_micro_usdc: int           # what the user must send / what is charged
     payment_url:       str           # printer x402 proxy URL
     status:            str = "pending"   # pending|paid|forwarded|error
     user_address:      str | None = None  # payer's Algorand address (from txn sender)
     user_tx_id:        str | None = None
     printer_tx_id:     str | None = None
     error:             str | None = None
+    user_id:           str | None = None  # human-readable user identifier
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,21 +57,119 @@ class CheckoutIntent:
             "user_tx_id":    self.user_tx_id,
             "printer_tx_id": self.printer_tx_id,
             "error":         self.error,
+            "user_id":       self.user_id,
         }
 
 
 class CheckoutStore:
-    def __init__(self) -> None:
-        self._store: dict[str, CheckoutIntent] = {}
+    """SQLite-backed checkout store — survives process restarts."""
+
+    _CREATE = """
+        CREATE TABLE IF NOT EXISTS checkouts (
+            checkout_id       TEXT PRIMARY KEY,
+            job_id            TEXT NOT NULL,
+            amount_micro_usdc INTEGER NOT NULL,
+            payment_url       TEXT NOT NULL,
+            status            TEXT NOT NULL DEFAULT 'pending',
+            user_address      TEXT,
+            user_tx_id        TEXT,
+            printer_tx_id     TEXT,
+            error             TEXT,
+            user_id           TEXT
+        )
+    """
+
+    def __init__(self, db_path: Path = _DB_PATH) -> None:
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        with self._lock:
+            self._conn.execute(self._CREATE)
+            self._conn.commit()
+            # Migration: add user_id column to existing databases
+            try:
+                self._conn.execute("ALTER TABLE checkouts ADD COLUMN user_id TEXT")
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        log.info("CheckoutStore opened: %s", db_path)
+
+    # -- internal helpers -------------------------------------------------------
+
+    def _row_to_intent(self, row: tuple) -> CheckoutIntent:
+        return CheckoutIntent(
+            checkout_id=row[0],
+            job_id=row[1],
+            amount_micro_usdc=row[2],
+            payment_url=row[3],
+            status=row[4],
+            user_address=row[5],
+            user_tx_id=row[6],
+            printer_tx_id=row[7],
+            error=row[8],
+            user_id=row[9] if len(row) > 9 else None,
+        )
+
+    _SELECT = (
+        "SELECT checkout_id, job_id, amount_micro_usdc, payment_url, "
+        "status, user_address, user_tx_id, printer_tx_id, error, user_id "
+        "FROM checkouts"
+    )
+
+    # -- public API -------------------------------------------------------------
 
     def add(self, intent: CheckoutIntent) -> None:
-        self._store[intent.checkout_id] = intent
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO checkouts "
+                "(checkout_id, job_id, amount_micro_usdc, payment_url, status, "
+                "user_address, user_tx_id, printer_tx_id, error, user_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    intent.checkout_id, intent.job_id, intent.amount_micro_usdc,
+                    intent.payment_url, intent.status, intent.user_address,
+                    intent.user_tx_id, intent.printer_tx_id, intent.error,
+                    intent.user_id,
+                ),
+            )
+            self._conn.commit()
 
     def get(self, checkout_id: str) -> CheckoutIntent | None:
-        return self._store.get(checkout_id)
+        with self._lock:
+            row = self._conn.execute(
+                self._SELECT + " WHERE checkout_id = ?", (checkout_id,)
+            ).fetchone()
+        return self._row_to_intent(row) if row else None
+
+    def update(self, intent: CheckoutIntent) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE checkouts "
+                "SET status=?, user_address=?, user_tx_id=?, printer_tx_id=?, error=?, user_id=? "
+                "WHERE checkout_id=?",
+                (
+                    intent.status, intent.user_address, intent.user_tx_id,
+                    intent.printer_tx_id, intent.error, intent.user_id,
+                    intent.checkout_id,
+                ),
+            )
+            self._conn.commit()
 
     def pending(self) -> list[CheckoutIntent]:
-        return [i for i in self._store.values() if i.status == "pending"]
+        with self._lock:
+            rows = self._conn.execute(
+                self._SELECT + " WHERE status = 'pending'"
+            ).fetchall()
+        return [self._row_to_intent(row) for row in rows]
+
+    def get_user_spent_micro(self, user_id: str) -> int:
+        """Return total µUSDC reserved/spent for user_id (status != pending/error)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(amount_micro_usdc), 0) FROM checkouts "
+                "WHERE user_id = ? AND status NOT IN ('pending', 'error')",
+                (user_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
 
 store = CheckoutStore()
@@ -81,11 +190,11 @@ def _current_round() -> int:
         return 0
 
 
-def _fetch_txns(wallet: str, min_round: int) -> list[dict[str, Any]]:
+def _fetch_txns(wallet: str, min_round: int, limit: int = 50) -> list[dict[str, Any]]:
     url = (
         f"{_INDEXER}/v2/accounts/{wallet}/transactions"
         f"?asset-id={USDC_ASSET_ID}&tx-type=axfer"
-        f"&min-round={min_round}&limit=50"
+        f"&min-round={min_round}&limit={limit}"
     )
     try:
         return _get_json(url).get("transactions", [])
@@ -95,13 +204,29 @@ def _fetch_txns(wallet: str, min_round: int) -> list[dict[str, Any]]:
 
 
 def _note_text(txn: dict) -> str:
+    """Return the decoded note string from a transaction.
+
+    Pera Wallet stores the ARC-26 `note` URI parameter verbatim instead of
+    base64-decoding it first, so the note bytes are the base64-encoded user_id
+    string rather than the raw user_id.  The indexer then base64-encodes those
+    bytes again, resulting in double-encoding.  We try to decode twice and
+    return the most deeply-decoded printable ASCII result.
+    """
     raw = txn.get("note", "")
     if not raw:
         return ""
     try:
-        return base64.b64decode(raw).decode("utf-8", errors="replace").strip()
+        decoded = base64.b64decode(raw).decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
+    # Attempt a second decode in case Pera stored the base64 string as-is
+    try:
+        decoded2 = base64.b64decode(decoded + "==").decode("utf-8", errors="replace").strip()
+        if decoded2 and decoded2.isascii() and decoded2.isprintable():
+            return decoded2
+    except Exception:
+        pass
+    return decoded
 
 
 def _micro_usdc_received(txn: dict, receiver: str) -> int:
@@ -153,10 +278,10 @@ async def watch(marketplace_wallet: str, pay_offer_fn, poll_sec: float = 5.0) ->
                     )
                     continue
 
-                pay = txn.get("asset-transfer-transaction", {})
-                intent.user_address = pay.get("sender")
+                intent.user_address = txn.get("sender")
                 intent.status       = "paid"
                 intent.user_tx_id   = txn.get("id")
+                store.update(intent)
                 log.info(
                     "job %s: user payment confirmed tx=%s from %s",
                     intent.job_id, intent.user_tx_id,
@@ -173,14 +298,17 @@ async def _forward(intent: CheckoutIntent, pay_offer_fn) -> None:
             url += sep + "user_address=" + urllib.parse.quote(intent.user_address, safe="")
         result = await pay_offer_fn(url)
         if result.ok:
-            intent.status       = "forwarded"
+            intent.status        = "forwarded"
             intent.printer_tx_id = result.tx_id
+            store.update(intent)
             log.info("job %s: printer paid tx=%s", intent.job_id, result.tx_id)
         else:
             intent.status = "error"
             intent.error  = result.error or "printer payment failed"
+            store.update(intent)
             log.error("job %s: printer payment error: %s", intent.job_id, intent.error)
     except Exception as exc:
         intent.status = "error"
         intent.error  = str(exc)
+        store.update(intent)
         log.error("job %s: forward exception: %s", intent.job_id, exc)

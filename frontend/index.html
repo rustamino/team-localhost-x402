@@ -19,6 +19,34 @@
        SCREEN 1 — INPUT
   ══════════════════════════════════════ -->
   <section class="screen active" id="s-input">
+
+    <!-- User wallet card -->
+    <div class="card user-card">
+      <div class="user-card-top">
+        <div style="flex:1;min-width:0">
+          <div class="label">Your ID</div>
+          <input type="text" id="user-id-input" class="user-id-input"
+                 autocomplete="off" spellcheck="false" maxlength="40">
+        </div>
+        <button class="icon-btn" id="btn-regen-id" title="Generate new ID">↻</button>
+      </div>
+      <div class="user-card-budget">
+        <label class="label" for="budget-input">Pre-fund budget</label>
+        <div class="budget-row">
+          <input type="number" id="budget-input" min="0.1" max="100" step="0.5" value="2.00">
+          <span class="budget-unit">USDC</span>
+        </div>
+      </div>
+      <div class="user-qr-row">
+        <canvas id="main-qr-canvas" width="100" height="100"></canvas>
+        <div class="user-qr-actions">
+          <div class="label" style="margin-bottom:6px">Scan with Pera to pre-fund</div>
+          <a class="btn btn-outline btn-sm" id="btn-main-pera" href="#" target="_blank" rel="noopener">Open Pera Wallet</a>
+          <button class="btn btn-secondary btn-sm" id="btn-main-copy">Copy address</button>
+        </div>
+      </div>
+    </div>
+
     <div class="field">
       <label>What to print?</label>
       <input type="text" id="search-text" placeholder="find a benchy on printables…" autocomplete="off">
@@ -101,82 +129,65 @@
   </section>
 
   <!-- ══════════════════════════════════════
-       SCREEN 5 — BUDGET AUTHORIZATION
+       SCREEN 5 — BALANCE CHECK & SUBMIT
   ══════════════════════════════════════ -->
-  <section class="screen" id="s-authorize">
-    <button class="back-btn" data-back="s-offers">← Back</button>
-    <h2>Fund session wallet</h2>
-    <p style="font-size:.85rem;color:var(--text2);line-height:1.5">
-      Fund the agent's temporary wallet. It will pay the printer automatically
-      and return any remainder to your address.
-    </p>
+  <section class="screen" id="s-balance">
+    <button class="back-btn" data-back="s-offers">← Back to offers</button>
+    <h2>Confirm &amp; print</h2>
 
+    <!-- Selected offer summary -->
     <div class="card">
-      <div class="label">Selected printer</div>
-      <div class="card-title" id="auth-printer-name" style="margin-top:4px"></div>
+      <div class="label">Printer</div>
+      <div class="card-title" id="bal-printer-name" style="margin-top:4px"></div>
+      <div class="card-sub"   id="bal-printer-sub"></div>
       <div class="card-price">
-        <span class="eur" id="auth-price-eur"></span>
-        <span class="usdc" id="auth-price-usdc"></span>
+        <span class="eur"  id="bal-price-eur"></span>
+        <span class="usdc" id="bal-price-usdc"></span>
       </div>
     </div>
 
-    <div class="field">
-      <label>Your Algorand address (for refund)</label>
-      <input type="text" id="refund-address" placeholder="ABCDEF…" autocomplete="off">
-    </div>
-
-    <div class="qr-wrap">
-      <canvas id="qr-canvas"></canvas>
-      <div class="label">Scan with Pera Wallet</div>
-    </div>
-
-    <div class="addr-row">
-      <span id="session-addr-display" class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis"></span>
-      <button class="copy-btn" id="btn-copy-addr">copy</button>
-    </div>
-
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <div class="countdown" id="auth-countdown"></div>
-      <div id="auth-status" style="font-size:.8rem;color:var(--text2)"></div>
-    </div>
-
-    <a class="btn btn-secondary" id="btn-open-pera" href="#" target="_blank" rel="noopener">Open Pera Wallet</a>
-    <button class="btn btn-primary" id="btn-confirm-pay">Pay now</button>
-  </section>
-
-  <!-- ══════════════════════════════════════
-       SCREEN 6 — PAYING (autonomous)
-  ══════════════════════════════════════ -->
-  <section class="screen" id="s-paying">
-    <div class="spacer"></div>
+    <!-- User + balance status -->
     <div class="card">
-      <div class="steps" id="pay-steps">
-        <div class="step done">
-          <span class="step-icon">✓</span>
-          <div class="step-text">Budget received</div>
-        </div>
-        <div class="step active" id="pay-step-submit">
-          <span class="step-icon">⟳</span>
-          <div class="step-text">
-            Submitting USDC transfer…
-            <div class="sub" id="pay-tx-id"></div>
-          </div>
-        </div>
-        <div class="step pending" id="pay-step-confirm">
-          <span class="step-icon">○</span>
-          <div class="step-text">Waiting for block confirmation (~3 s)</div>
-        </div>
-        <div class="step pending" id="pay-step-verify">
-          <span class="step-icon">○</span>
-          <div class="step-text">Verifying with Algorand facilitator</div>
-        </div>
-        <div class="step pending" id="pay-step-done">
-          <span class="step-icon">○</span>
-          <div class="step-text">Payment accepted · starting print</div>
-        </div>
+      <div class="info-row">
+        <span class="key">User</span>
+        <span class="value mono" id="bal-user-id">—</span>
+      </div>
+      <div class="info-row">
+        <span class="key">Available</span>
+        <span class="value" id="bal-available">checking…</span>
+      </div>
+      <div class="info-row">
+        <span class="key">Job price</span>
+        <span class="value" id="bal-job-price">—</span>
       </div>
     </div>
-    <div class="spacer"></div>
+
+    <!-- Status messages + progress -->
+    <div id="bal-steps" class="steps">
+      <div class="step active" id="bal-step-check">
+        <span class="step-icon">⟳</span>
+        <div class="step-text">
+          Checking balance…
+          <div class="sub" id="bal-step-check-sub"></div>
+        </div>
+      </div>
+      <div class="step pending" id="bal-step-submit">
+        <span class="step-icon">○</span>
+        <div class="step-text">Submitting to printer</div>
+      </div>
+      <div class="step pending" id="bal-step-forward">
+        <span class="step-icon">○</span>
+        <div class="step-text">Printer payment confirmed</div>
+      </div>
+    </div>
+
+    <!-- Insufficient balance: nudge to fund -->
+    <div id="bal-fund-hint" style="display:none">
+      <div class="alert alert-warn" id="bal-fund-msg"></div>
+      <div style="margin-top:8px;font-size:.82rem;color:var(--text2)">
+        Scan the QR on the home screen to add funds — this page will update automatically.
+      </div>
+    </div>
   </section>
 
   <!-- ══════════════════════════════════════
@@ -249,6 +260,26 @@
     <button class="btn btn-secondary" id="btn-new-order">New order</button>
   </section>
 
+</div>
+
+<!-- ══════════════════════════════════════
+     MODAL — ID change warning
+══════════════════════════════════════ -->
+<div id="modal-overlay" class="modal-overlay" style="display:none" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-icon">⚠</div>
+    <h3 class="modal-title">Funded balance will be inaccessible</h3>
+    <p class="modal-body">
+      ID <span class="modal-old-id" id="modal-old-id"></span> has
+      <strong id="modal-balance"></strong> USDC pre-funded.
+      If you change your ID now those tokens will be inaccessible
+      until you switch back to the same ID.
+    </p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" id="modal-cancel">Keep current ID</button>
+      <button class="btn btn-primary"   id="modal-confirm">Change anyway</button>
+    </div>
+  </div>
 </div>
 
 <script src="/qrcode.min.js"></script>

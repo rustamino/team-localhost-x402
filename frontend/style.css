@@ -392,3 +392,146 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--text2); }
 
 /* ── bottom spacer ──────────────────────── */
 .spacer { flex: 1; }
+
+/* ── user wallet card (screen 1) ─────────── */
+
+.user-card {
+  padding: 14px;
+  gap: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.user-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.user-id-input {
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-left: -6px;
+  margin-top: 2px;
+  width: 100%;
+  outline: none;
+  transition: border-color .15s, background .15s;
+}
+.user-id-input:hover { border-color: var(--border); }
+.user-id-input:focus { border-color: var(--accent); background: var(--surface2); }
+
+.icon-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  font-size: 1.1rem;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--accent); }
+
+.user-card-budget {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.budget-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.budget-row input[type="number"] {
+  width: 90px;
+  padding: 8px 10px;
+  font-size: 0.95rem;
+}
+
+.budget-unit {
+  font-size: 0.85rem;
+  color: var(--text2);
+}
+
+.user-qr-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-qr-row canvas {
+  border-radius: 6px;
+  background: #fff;
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.user-qr-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.btn-sm {
+  padding: 9px 12px;
+  font-size: 0.82rem;
+}
+
+/* ── modal ───────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 16px;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  max-width: 360px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 40px rgba(0,0,0,.6);
+}
+
+.modal-icon { font-size: 1.8rem; text-align: center; }
+.modal-title { font-size: 1rem; font-weight: 700; text-align: center; }
+.modal-body {
+  font-size: 0.88rem;
+  color: var(--text2);
+  line-height: 1.55;
+  text-align: center;
+}
+.modal-old-id {
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: var(--accent);
+  font-weight: 600;
+}
+.modal-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}

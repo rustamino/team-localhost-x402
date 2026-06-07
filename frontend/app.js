@@ -1,19 +1,47 @@
-// ─── state ───────────────────────────────────────────────────────────────────
+// ─── user ID generation ───────────────────────────────────────────────────────
+
+const _ADJ = [
+  "tender","jolly","brave","eager","clever","witty","quirky","swift","bold","calm",
+  "hopeful","nimble","daring","gentle","keen","lively","merry","noble","proud","vivid",
+  "wily","crisp","plucky","spry","zesty","sleek","grand","sunny","deft","fleet",
+];
+const _ANIMAL = [
+  "panda","otter","falcon","tiger","wolf","fox","bear","lynx","crane","bison",
+  "gecko","koala","manta","raven","tapir","viper","walrus","yak","zebu","stoat",
+  "quail","robin","snail","trout","moose","llama","macaw","hippo","okapi","capybara",
+];
+
+function genUserId() {
+  const a = _ADJ[Math.floor(Math.random() * _ADJ.length)];
+  const b = _ANIMAL[Math.floor(Math.random() * _ANIMAL.length)];
+  return `${a}-${b}`;
+}
+
+function getOrCreateUserId() {
+  let id = localStorage.getItem("x402_user_id");
+  if (!id) { id = genUserId(); localStorage.setItem("x402_user_id", id); }
+  return id;
+}
+
+function getBudget() {
+  return parseFloat(localStorage.getItem("x402_budget") || "2.0");
+}
+
+function setBudget(v) {
+  localStorage.setItem("x402_budget", String(v));
+}
+
+// ─── state ────────────────────────────────────────────────────────────────────
 
 const state = {
-  jobId:           null,
-  selectedOffer:   null,   // { printerName, canStartAt, paymentUrl, priceEur, priceUsdc }
-  sessionAddr:     null,
-  sessionSk:       null,   // Uint8Array — TODO: generate via algosdk
-  refundAddress:   null,
-  txId:            null,
-  manualMode:      false,
-  orderTtlEnd:     null,   // Date
-  wsClient:        null,
+  jobId:              null,
+  selectedOffer:      null,   // { printerName, canStartAt, paymentUrl, priceEur, priceUsdc, ... }
+  userId:             getOrCreateUserId(),
+  marketplaceWallet:  null,
+  txId:               null,
+  fundedUsdc:         0,      // known pre-funded balance for current userId (async-updated)
 };
 
-// Slicer output. Hardcoded until POST /api/jobs + the slicer container are wired;
-// these values are sent to the real backend /api/offers so printers can quote.
 const SLICE = { grams: 12.4, minutes: 47 };
 
 // ─── screen routing ───────────────────────────────────────────────────────────
@@ -27,13 +55,161 @@ document.querySelectorAll("[data-back]").forEach(btn => {
   btn.addEventListener("click", () => showScreen(btn.dataset.back));
 });
 
-// ─── screen 1 — input ────────────────────────────────────────────────────────
+// ─── screen 1 — main / wallet card ───────────────────────────────────────────
 
-const searchText = document.getElementById("search-text");
-const dropZone   = document.getElementById("drop-zone");
-const fileInput  = document.getElementById("file-input");
+const userIdInput   = document.getElementById("user-id-input");
+const budgetInput   = document.getElementById("budget-input");
+const mainQrCanvas  = document.getElementById("main-qr-canvas");
+const btnMainPera   = document.getElementById("btn-main-pera");
+const btnMainCopy   = document.getElementById("btn-main-copy");
+const btnRegenId    = document.getElementById("btn-regen-id");
+
+userIdInput.value   = state.userId;
+budgetInput.value   = getBudget().toFixed(2);
+
+async function initWalletCard() {
+  try {
+    const res = await fetch("/api/info");
+    if (!res.ok) return;
+    const data = await res.json();
+    state.marketplaceWallet = data.marketplace_wallet;
+    updateMainQr();
+  } catch { /* offline — QR stays blank */ }
+
+  // Non-blocking: check if current ID already has funded balance
+  fetchFundedBalance(state.userId);
+}
+
+async function fetchFundedBalance(userId) {
+  try {
+    const res = await fetch(`/api/balance/${encodeURIComponent(userId)}`);
+    const data = await res.json();
+    if (state.userId === userId) {          // still the same ID
+      state.fundedUsdc = data.available_usdc || 0;
+    }
+  } catch { /* ignore */ }
+}
+
+// ── modal ────────────────────────────────────────────────────────────────────
+
+const modalOverlay = document.getElementById("modal-overlay");
+let _modalConfirmFn = null;
+let _modalCancelFn  = null;
+
+function showModal({ oldId, balance, onConfirm, onCancel }) {
+  document.getElementById("modal-old-id").textContent  = oldId;
+  document.getElementById("modal-balance").textContent = balance.toFixed(4);
+  _modalConfirmFn = onConfirm;
+  _modalCancelFn  = onCancel;
+  modalOverlay.style.display = "flex";
+}
+
+function hideModal() {
+  modalOverlay.style.display = "none";
+  _modalConfirmFn = null;
+  _modalCancelFn  = null;
+}
+
+document.getElementById("modal-confirm").addEventListener("click", () => {
+  hideModal(); _modalConfirmFn?.();
+});
+document.getElementById("modal-cancel").addEventListener("click", () => {
+  hideModal(); _modalCancelFn?.();
+});
+modalOverlay.addEventListener("click", e => {
+  if (e.target === modalOverlay) { hideModal(); _modalCancelFn?.(); }
+});
+
+// ── ID change logic ───────────────────────────────────────────────────────────
+
+function sanitizeId(raw) {
+  return raw.trim().toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40);
+}
+
+function applyUserId(newId) {
+  state.userId      = newId;
+  state.fundedUsdc  = 0;
+  localStorage.setItem("x402_user_id", newId);
+  userIdInput.value = newId;
+  updateMainQr();
+  fetchFundedBalance(newId);
+}
+
+function tryChangeUserId(newId, onCancelled) {
+  if (!newId || newId === state.userId) return;
+  if (state.fundedUsdc > 0) {
+    showModal({
+      oldId:     state.userId,
+      balance:   state.fundedUsdc,
+      onConfirm: () => applyUserId(newId),
+      onCancel:  () => {
+        userIdInput.value = state.userId;  // revert input
+        onCancelled?.();
+      },
+    });
+  } else {
+    applyUserId(newId);
+  }
+}
+
+// Input: blur or Enter commits the edit
+userIdInput.addEventListener("keydown", e => {
+  if (e.key === "Enter")  { userIdInput.blur(); }
+  if (e.key === "Escape") { userIdInput.value = state.userId; userIdInput.blur(); }
+});
+userIdInput.addEventListener("blur", () => {
+  const newId = sanitizeId(userIdInput.value);
+  if (!newId) { userIdInput.value = state.userId; return; }
+  tryChangeUserId(newId, null);
+});
+
+function updateMainQr() {
+  const wallet = state.marketplaceWallet;
+  if (!wallet) return;
+
+  const budget = getBudget();
+  const microUsdc = Math.ceil(budget * 1_000_000);
+  const noteB64   = btoa(state.userId);
+  const arc26     = `algorand://${wallet}?amount=${microUsdc}&asset=10458941&note=${encodeURIComponent(noteB64)}`;
+  const peraHref  = "perawallet://transfer?" + new URLSearchParams({
+    asset: "10458941", to: wallet,
+    amount: String(microUsdc), note: noteB64,
+  }).toString();
+
+  btnMainPera.href = peraHref;
+
+  btnMainCopy.onclick = () => {
+    navigator.clipboard.writeText(wallet);
+    btnMainCopy.textContent = "✓ Copied";
+    setTimeout(() => { btnMainCopy.textContent = "Copy address"; }, 1500);
+  };
+
+  QRCode.toCanvas(mainQrCanvas, arc26, {
+    width: 100, margin: 1,
+    color: { dark: "#000000", light: "#ffffff" },
+  }).catch(() => {});
+}
+
+btnRegenId.addEventListener("click", () => {
+  tryChangeUserId(genUserId(), null);
+});
+
+budgetInput.addEventListener("change", () => {
+  const v = Math.max(0.1, parseFloat(budgetInput.value) || 2.0);
+  budgetInput.value = v.toFixed(2);
+  setBudget(v);
+  updateMainQr();
+});
+
+initWalletCard();
+
+// ─── screen 1 — model input ───────────────────────────────────────────────────
+
+const searchText  = document.getElementById("search-text");
+const dropZone    = document.getElementById("drop-zone");
+const fileInput   = document.getElementById("file-input");
 const instruction = document.getElementById("instruction");
-const btnFind    = document.getElementById("btn-find");
+const btnFind     = document.getElementById("btn-find");
 
 let uploadedFile = null;
 
@@ -42,16 +218,12 @@ function updateFindBtn() {
 }
 
 searchText.addEventListener("input", () => {
-  if (searchText.value.trim()) {
-    dropZone.classList.remove("has-file");
-    uploadedFile = null;
-  }
+  if (searchText.value.trim()) { dropZone.classList.remove("has-file"); uploadedFile = null; }
   updateFindBtn();
 });
 
 dropZone.addEventListener("click", () => fileInput.click());
-
-dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone.addEventListener("dragover",  e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
 dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
 dropZone.addEventListener("drop", e => {
   e.preventDefault();
@@ -59,10 +231,7 @@ dropZone.addEventListener("drop", e => {
   const f = e.dataTransfer.files[0];
   if (f && f.name.endsWith(".stl")) setFile(f);
 });
-
-fileInput.addEventListener("change", () => {
-  if (fileInput.files[0]) setFile(fileInput.files[0]);
-});
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
 
 function setFile(f) {
   uploadedFile = f;
@@ -74,11 +243,8 @@ function setFile(f) {
 
 btnFind.addEventListener("click", async () => {
   const instr = instruction.value.trim();
-  if (uploadedFile) {
-    await startWithFile(uploadedFile, instr);
-  } else {
-    await startWithSearch(searchText.value.trim(), instr);
-  }
+  if (uploadedFile) await startWithFile(uploadedFile, instr);
+  else              await startWithSearch(searchText.value.trim(), instr);
 });
 
 // ─── screen 1 → 2: model search ──────────────────────────────────────────────
@@ -89,11 +255,7 @@ async function startWithSearch(query, instr) {
   const list = document.getElementById("model-list");
   list.innerHTML = `<div style="color:var(--text2);font-size:.9rem">Searching…</div>`;
 
-  // TODO: replace with real API call
-  // const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-  // const { results } = await res.json();
   const results = mockSearchResults(query);
-
   list.innerHTML = "";
   results.forEach(m => {
     const card = document.createElement("div");
@@ -107,14 +269,12 @@ async function startWithSearch(query, instr) {
       <button class="btn btn-outline">Select</button>
     `;
     card.querySelector(".btn").addEventListener("click", () => {
-      state.jobId = null;  // will be set after POST /api/jobs with model URL
+      state.jobId = null;
       startProcessing({ name: m.name, modelUrl: m.url, instruction: instr });
     });
     list.appendChild(card);
   });
 }
-
-// ─── screen 1 → 3: direct file upload ────────────────────────────────────────
 
 async function startWithFile(file, instr) {
   startProcessing({ name: file.name, file, instruction: instr });
@@ -127,7 +287,6 @@ async function startProcessing({ name, file, modelUrl, instruction }) {
   document.getElementById("step-slicing-sub").textContent = name;
   state.jobId = state.jobId || ("j_" + Math.random().toString(36).slice(2, 10));
 
-  // animate slicing bar
   const bar = document.getElementById("slicing-bar");
   let pct = 0;
   const fakeSlicing = setInterval(() => {
@@ -135,20 +294,10 @@ async function startProcessing({ name, file, modelUrl, instruction }) {
     bar.style.width = pct + "%";
   }, 200);
 
-  // TODO: POST /api/jobs with file or modelUrl
-  // const form = new FormData();
-  // if (file) form.append("file", file);
-  // else      form.append("model_url", modelUrl);
-  // const res  = await fetch("/api/jobs", { method: "POST", body: form });
-  // const data = await res.json();
-  // state.jobId = data.job_id;
-
-  // simulate slicing delay
   await sleep(2200);
   clearInterval(fakeSlicing);
   bar.style.width = "100%";
 
-  // transition step 1 → step 2
   const stepSlicing = document.getElementById("step-slicing");
   stepSlicing.classList.replace("active", "done");
   stepSlicing.querySelector(".step-icon").textContent = "✓";
@@ -159,15 +308,12 @@ async function startProcessing({ name, file, modelUrl, instruction }) {
   stepQuotes.querySelector(".step-icon").textContent = "⟳";
   document.getElementById("step-quotes-sub").textContent = "Contacting printer servers…";
 
-  // Real call: collect quotes from all registered printer servers
   let data;
   try {
     data = await requestOffers(instruction);
   } catch (err) {
-    console.error("failed to load offers from backend:", err);
     data = {
-      offers: [],
-      selectedIndex: null,
+      offers: [], selectedIndex: null,
       reasoning: "Could not reach the marketplace backend.",
       printerErrors: [{ url: location.origin, error: err.message }],
     };
@@ -188,7 +334,7 @@ async function startProcessing({ name, file, modelUrl, instruction }) {
   showOffersScreen(data);
 }
 
-// ─── screen 4: offers ─────────────────────────────────────────────────────────
+// ─── screen 4: offers ────────────────────────────────────────────────────────
 
 function showOffersScreen(data) {
   showScreen("s-offers");
@@ -199,7 +345,6 @@ function showOffersScreen(data) {
 
   if (!data.offers.length) {
     document.getElementById("btn-pay-offer").disabled = true;
-
     const errors = data.printerErrors || [];
     let errHtml = "";
     if (errors.length) {
@@ -207,20 +352,16 @@ function showOffersScreen(data) {
         `<div style="margin-top:.8rem;font-size:.82rem;color:var(--err,#e55)">` +
         `<strong>Connection errors (${errors.length}):</strong>` +
         `<ul style="margin:.4rem 0 0;padding-left:1.2rem;word-break:break-all">` +
-        errors.map(e =>
-          `<li><code>${escHtml(e.url)}</code><br>${escHtml(e.error)}</li>`
-        ).join("") +
+        errors.map(e => `<li><code>${escHtml(e.url)}</code><br>${escHtml(e.error)}</li>`).join("") +
         `</ul></div>`;
     }
-
     list.innerHTML =
       `<div style="font-size:.9rem;line-height:1.5">` +
       `<span style="color:var(--text2)">No printers responded.</span><br>` +
       `Check that the printer servers are running and that the backend's ` +
       `<code>PRINTERS</code> env var lists them.` +
       (data.reasoning ? `<br><br><em>${escHtml(data.reasoning)}</em>` : "") +
-      errHtml +
-      `</div>`;
+      errHtml + `</div>`;
     return;
   }
 
@@ -242,9 +383,7 @@ function showOffersScreen(data) {
   });
 
   if (data.selectedIndex !== null) {
-    selectOffer(data.selectedIndex, data.offers,
-      list.children[data.selectedIndex]);
-
+    selectOffer(data.selectedIndex, data.offers, list.children[data.selectedIndex]);
     const reasoning = document.getElementById("agent-reasoning");
     reasoning.textContent = data.reasoning;
     reasoning.style.display = "";
@@ -267,147 +406,149 @@ function selectOffer(index, offers, cardEl) {
 }
 
 document.getElementById("btn-pay-offer").addEventListener("click", () => {
-  if (state.selectedOffer) showAuthorizeScreen(state.selectedOffer);
+  if (state.selectedOffer) showBalanceScreen(state.selectedOffer);
 });
 
-document.getElementById("btn-clarify").addEventListener("click", () => {
-  showScreen("s-input");
-});
-
+document.getElementById("btn-clarify").addEventListener("click", () => showScreen("s-input"));
 document.getElementById("btn-manual").addEventListener("click", () => {
   state.manualMode = true;
   document.getElementById("clarify-row").style.display = "none";
   document.getElementById("agent-clarify").style.display = "none";
   document.getElementById("btn-pay-offer").disabled = false;
   document.getElementById("btn-pay-offer").textContent = "Pay selected offer →";
-  // TODO: make all cards clickable to select
 });
 
-// ─── screen 5: authorize ─────────────────────────────────────────────────────
+// ─── screen 5: balance check & submit ────────────────────────────────────────
 
-async function showAuthorizeScreen(offer) {
-  showScreen("s-authorize");
+function showBalanceScreen(offer) {
+  showScreen("s-balance");
 
-  document.getElementById("auth-printer-name").textContent = offer.printerName;
-  document.getElementById("auth-price-eur").textContent    = "€" + offer.priceEur;
-  document.getElementById("auth-price-usdc").textContent   = offer.priceUsdc + " USDC";
+  document.getElementById("bal-printer-name").textContent = offer.printerName;
+  document.getElementById("bal-printer-sub").textContent  = `${offer.city} · starts ${offer.canStartHuman}`;
+  document.getElementById("bal-price-eur").textContent    = "€" + offer.priceEur;
+  document.getElementById("bal-price-usdc").textContent   = offer.priceUsdc + " USDC";
+  document.getElementById("bal-user-id").textContent      = state.userId;
+  document.getElementById("bal-job-price").textContent    = offer.priceUsdc + " USDC";
+  document.getElementById("bal-available").textContent    = "checking…";
 
-  const statusEl = document.getElementById("auth-status");
-  const payBtn   = document.getElementById("btn-confirm-pay");
-  payBtn.disabled    = true;
-  payBtn.textContent = "Creating checkout…";
-  statusEl.textContent = "";
+  // reset steps
+  setBalStep("bal-step-check",   "active",  "");
+  setBalStep("bal-step-submit",  "pending", "");
+  setBalStep("bal-step-forward", "pending", "");
+  document.getElementById("bal-fund-hint").style.display = "none";
 
-  // 1. Create checkout intent on the backend — get marketplace QR data.
-  let checkout;
-  try {
-    const res = await fetch("/api/checkout", {
-      method:  "POST",
-      headers: { "content-type": "application/json" },
-      body:    JSON.stringify({
-        payment_url: offer.paymentUrl,
-        job_id:      state.jobId,
-        price_usdc:  offer.priceUsdc,
-      }),
-    });
-    checkout = await res.json();
-    if (!res.ok) throw new Error(checkout.detail || "Checkout creation failed");
-  } catch (err) {
-    statusEl.style.color = "var(--error, #e55)";
-    statusEl.textContent = err.message || "Network error";
-    payBtn.textContent = "Retry";
-    payBtn.disabled    = false;
-    payBtn.onclick = () => showAuthorizeScreen(offer);
-    return;
-  }
-
-  // 2. Show marketplace wallet QR (not the printer's address).
-  const { arc26_uri, pera_href, marketplace_wallet, checkout_id } = checkout;
-
-  document.getElementById("session-addr-display").textContent = marketplace_wallet;
-
-  QRCode.toCanvas(
-    document.getElementById("qr-canvas"),
-    arc26_uri,
-    { width: 200, margin: 2, color: { dark: "#000000", light: "#ffffff" } },
-  ).catch(err => console.error("QR render failed:", err));
-
-  document.getElementById("btn-open-pera").href = pera_href;
-
-  document.getElementById("btn-copy-addr").onclick = () => {
-    navigator.clipboard.writeText(marketplace_wallet);
-    document.getElementById("btn-copy-addr").textContent = "✓";
-    setTimeout(() => document.getElementById("btn-copy-addr").textContent = "copy", 1500);
-  };
-
-  payBtn.textContent = "Waiting for Pera payment…";
-  statusEl.style.color = "var(--text2, #888)";
-  statusEl.textContent  = "Pay via the QR or Pera deeplink above — we'll detect it automatically.";
-
-  // 3. Poll backend until user payment is detected and printer is paid.
-  await pollCheckout(checkout_id);
+  pollBalance(offer);
 }
 
-async function pollCheckout(checkoutId) {
-  const statusEl = document.getElementById("auth-status");
-  // ~10 min timeout (120 × 5 s)
-  for (let i = 0; i < 120; i++) {
+function setBalStep(id, status, sub) {
+  const el = document.getElementById(id);
+  el.classList.remove("active", "pending", "done", "error");
+  el.classList.add(status);
+  const icon = el.querySelector(".step-icon");
+  icon.textContent =
+    status === "done"   ? "✓" :
+    status === "error"  ? "✗" :
+    status === "active" ? "⟳" : "○";
+  const subEl = el.querySelector(".sub");
+  if (subEl) subEl.textContent = sub || "";
+}
+
+async function pollBalance(offer) {
+  const priceUsdc = parseFloat(offer.priceUsdc);
+  const maxWaitMs = 15 * 60 * 1000; // 15 min
+  const startTime = Date.now();
+
+  // confirm we're still on the balance screen before proceeding
+  function onBalScreen() {
+    return document.getElementById("s-balance").classList.contains("active");
+  }
+
+  while (onBalScreen() && Date.now() - startTime < maxWaitMs) {
+    let bal;
+    try {
+      const res = await fetch(`/api/balance/${encodeURIComponent(state.userId)}`);
+      bal = await res.json();
+    } catch {
+      await sleep(5000);
+      continue;
+    }
+
+    const avail = bal.available_usdc ?? 0;
+    document.getElementById("bal-available").textContent = avail.toFixed(6) + " USDC";
+
+    if (avail >= priceUsdc) {
+      // Sufficient — submit to printer
+      setBalStep("bal-step-check",  "done",   "Balance sufficient");
+      setBalStep("bal-step-submit", "active", "");
+      document.getElementById("bal-fund-hint").style.display = "none";
+
+      let checkoutId;
+      try {
+        const res = await fetch("/api/submit-print", {
+          method:  "POST",
+          headers: { "content-type": "application/json" },
+          body:    JSON.stringify({
+            payment_url: offer.paymentUrl,
+            job_id:      state.jobId,
+            price_usdc:  offer.priceUsdc,
+            user_id:     state.userId,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Submit failed");
+        checkoutId = data.checkout_id;
+      } catch (err) {
+        setBalStep("bal-step-submit", "error", err.message);
+        return;
+      }
+
+      setBalStep("bal-step-submit",  "done",   "");
+      setBalStep("bal-step-forward", "active", "Waiting for printer confirmation…");
+
+      // Poll until forwarded
+      await pollForwardStatus(checkoutId);
+      return;
+    } else {
+      // Not enough — show how much more is needed
+      const need = Math.max(0, priceUsdc - avail).toFixed(6);
+      setBalStep("bal-step-check", "active", `${avail.toFixed(4)} / ${priceUsdc} USDC`);
+      document.getElementById("bal-fund-msg").textContent =
+        `Need ${need} more USDC — scan the QR on the home screen to top up.`;
+      document.getElementById("bal-fund-hint").style.display = "";
+    }
+
     await sleep(5000);
+  }
+
+  if (onBalScreen()) {
+    setBalStep("bal-step-check", "error", "Timed out — go back and try again");
+  }
+}
+
+async function pollForwardStatus(checkoutId) {
+  for (let i = 0; i < 60; i++) {  // up to 5 min
+    await sleep(5000);
+    if (!document.getElementById("s-balance").classList.contains("active")) return;
+
     let data;
     try {
       const res = await fetch(`/api/checkout/${checkoutId}`);
       data = await res.json();
-    } catch {
-      continue;  // transient network error — keep polling
-    }
+    } catch { continue; }
 
-    if (data.status === "paid") {
-      statusEl.style.color = "var(--text2, #888)";
-      statusEl.textContent  = "Payment received — forwarding to printer…";
-      continue;
-    }
     if (data.status === "forwarded") {
       state.txId = data.printer_tx_id || data.user_tx_id || null;
-      startPayingScreen({ tx_id: state.txId });
+      setBalStep("bal-step-forward", "done", "");
+      await sleep(600);
+      showTrackingScreen();
       return;
     }
     if (data.status === "error") {
-      statusEl.style.color = "var(--error, #e55)";
-      statusEl.textContent  = data.error || "Payment error";
+      setBalStep("bal-step-forward", "error", data.error || "Printer payment failed");
       return;
     }
   }
-  statusEl.style.color = "var(--error, #e55)";
-  statusEl.textContent  = "Timed out waiting for payment — please try again.";
-}
-
-// ─── screen 6: paying ────────────────────────────────────────────────────────
-
-async function startPayingScreen(payResult = {}) {
-  showScreen("s-paying");
-
-  const txId = payResult.tx_id || state.txId || null;
-
-  setPayStep("pay-step-submit", "done", txId ? `Submitted → ${txId.slice(0, 12)}…` : "Submitted");
-  setPayStep("pay-step-confirm", "done", null);
-  setPayStep("pay-step-verify",  "done", null);
-  setPayStep("pay-step-done",    "done", null);
-
-  await sleep(600);
-  showTrackingScreen();
-}
-
-function setPayStep(id, status, subText) {
-  const el = document.getElementById(id);
-  el.classList.remove("active", "pending", "done");
-  el.classList.add(status);
-  const icon = el.querySelector(".step-icon");
-  icon.textContent = status === "done" ? "✓" : status === "active" ? "⟳" : "○";
-  if (subText) {
-    let sub = el.querySelector(".sub");
-    if (!sub) { sub = document.createElement("div"); sub.className = "sub"; el.querySelector(".step-text").appendChild(sub); }
-    sub.textContent = subText;
-  }
+  setBalStep("bal-step-forward", "error", "Printer timed out — please try again");
 }
 
 // ─── screen 7: tracking ──────────────────────────────────────────────────────
@@ -428,14 +569,13 @@ function showTrackingScreen() {
   document.getElementById("tracking-maps-link").href =
     `https://maps.google.com/?q=${offer.coords}`;
 
-  // TODO: subscribe to /ws/client/{job_id} for real progress + temps
   simulateProgress();
 }
 
 function simulateProgress() {
   let pct = 0;
   const startTime = Date.now();
-  const totalMs = 30000; // demo: 30 s
+  const totalMs = 30000;
 
   const interval = setInterval(() => {
     pct = Math.min(100, (Date.now() - startTime) / totalMs * 100);
@@ -447,46 +587,28 @@ function simulateProgress() {
     document.getElementById("tracking-elapsed").textContent = `${elapsed}s elapsed`;
     document.getElementById("tracking-eta").textContent  = etaSec > 0 ? `~${etaSec}s remaining` : "finishing…";
 
-    // fake temps
     document.getElementById("temp-hotend").textContent = "215° / 215° ✓";
     document.getElementById("temp-hotend").className   = "temp-ok";
     document.getElementById("temp-bed").textContent    = "60° / 60° ✓";
     document.getElementById("temp-bed").className      = "temp-ok";
 
-    if (pct >= 100) {
-      clearInterval(interval);
-      showDoneScreen();
-    }
+    if (pct >= 100) { clearInterval(interval); showDoneScreen(); }
   }, 500);
 }
 
-// ─── screen 8: done ───────────────────────────────────────────────────────────
+// ─── screen 8: done ──────────────────────────────────────────────────────────
 
 function showDoneScreen() {
   showScreen("s-done");
   const offer = state.selectedOffer;
   document.getElementById("done-filename").textContent = "model.stl";
   document.getElementById("done-location").textContent = `${offer.printerName}\n${offer.city}`;
-
-  // TODO: trigger session wallet cleanup — sweep remaining balance to refund address
 }
 
 document.getElementById("btn-new-order").addEventListener("click", () => {
-  Object.assign(state, { jobId: null, selectedOffer: null, sessionAddr: null,
-    sessionSk: null, txId: null, orderTtlEnd: null });
-  sessionStorage.clear();
+  Object.assign(state, { jobId: null, selectedOffer: null, txId: null });
   showScreen("s-input");
 });
-
-// ─── mock data ────────────────────────────────────────────────────────────────
-
-function mockSearchResults(query) {
-  return [
-    { name: "3DBenchy",         source: "printables.com", rating: "4.9", size: "4.2 MB", emoji: "⛵", url: "https://printables.com/model/3030" },
-    { name: "Benchy Speed Boat",source: "cults3d.com",    rating: "4.5", size: "3.1 MB", emoji: "🚢", url: "https://cults3d.com/en/3d-model/benchy" },
-    { name: "Mini Benchy",      source: "printables.com", rating: "4.3", size: "2.0 MB", emoji: "🛥",  url: "https://printables.com/model/benchy-mini" },
-  ];
-}
 
 // ─── real offers (POST /api/offers) ───────────────────────────────────────────
 
@@ -508,7 +630,7 @@ async function requestOffers(instruction) {
     offers:        (data.offers || []).map(mapOffer),
     selectedIndex: data.selected_index ?? null,
     reasoning:     data.reasoning || "",
-    printerErrors: data.printer_errors || [],   // [{url, error}] for unreachable printers
+    printerErrors: data.printer_errors || [],
   };
 }
 
@@ -538,6 +660,16 @@ function humanizeStart(iso) {
   if (diffMin < 60) return `in ${diffMin}m`;
   const h = Math.floor(diffMin / 60), m = diffMin % 60;
   return m ? `in ${h}h ${m}m` : `in ${h}h`;
+}
+
+// ─── mock data ────────────────────────────────────────────────────────────────
+
+function mockSearchResults(query) {
+  return [
+    { name: "3DBenchy",          source: "printables.com", rating: "4.9", size: "4.2 MB", emoji: "⛵", url: "https://printables.com/model/3030" },
+    { name: "Benchy Speed Boat", source: "cults3d.com",    rating: "4.5", size: "3.1 MB", emoji: "🚢", url: "https://cults3d.com/en/3d-model/benchy" },
+    { name: "Mini Benchy",       source: "printables.com", rating: "4.3", size: "2.0 MB", emoji: "🛥",  url: "https://printables.com/model/benchy-mini" },
+  ];
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

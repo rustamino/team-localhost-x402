@@ -10,3 +10,6 @@ build/
 .venv/
 venv/
 .env
+checkout.db
+checkout.db-shm
+checkout.db-wal
